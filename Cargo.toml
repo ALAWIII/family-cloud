@@ -10,3 +10,8 @@ keywords = ["cloud", "media", "self-hosted", "family"]
 categories = ["multimedia", "web-programming"]
 
 [dependencies]
+aws-config = { version = "1.8.12", features = ["rustls"] }
+aws-sdk-s3 = "1.119.0"
+axum = { version = "0.8.8", features = ["http2"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "macros", "postgres", "uuid", "chrono", "migrate"] }
+tokio = { version = "1.49.0", features = ["full"] }
