@@ -1,0 +1,12 @@
+[package]
+name = "family-cloud"
+version = "0.1.0"
+edition = "2024"
+authors = ["Allawiii alighraibeh87@gmail.com"]
+description = "A self-hosted cloud media center and streaming serivce scales well from small usage to enterprise"
+license = "MIT"
+readme = "README.md"
+keywords = ["cloud", "media", "self-hosted", "family"]
+categories = ["multimedia", "web-programming"]
+
+[dependencies]
