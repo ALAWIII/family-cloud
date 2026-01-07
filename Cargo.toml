@@ -10,7 +10,7 @@ keywords = ["cloud", "media", "self-hosted", "family"]
 categories = ["multimedia", "web-programming"]
 
 [dependencies]
-aws-config = { version = "1.8.12", features = ["rustls"] }
+aws-config = { version = "1.8.12", features = ["behavior-version-latest", "rustls"] }
 aws-sdk-s3 = "1.119.0"
 axum = { version = "0.8.8", features = ["http2"] }
 dotenv = "0.15.0"
