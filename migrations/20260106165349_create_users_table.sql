@@ -1,7 +1,7 @@
 -- Add migration script here
 CREATE TABLE users (
   id UUID CONSTRAINT user_pk PRIMARY KEY,
-  username VARCHAR(50) UNIQUE NOT NULL,
+  username VARCHAR(50) constraint users_username_nn NOT NULL, -- set on signup for the first time
   email VARCHAR(255) UNIQUE NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   created_at TIMESTAMP DEFAULT NOW(),
