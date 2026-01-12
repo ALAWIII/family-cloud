@@ -4,6 +4,7 @@ use deadpool_redis::{
     Pool,
     redis::{self, AsyncTypedCommands, RedisError},
 };
+use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, types::Uuid};
@@ -11,8 +12,13 @@ use sqlx::{PgPool, types::Uuid};
 use crate::{
     AppState,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
+    password_reset_body, send_email, verification_body,
 };
 
+#[derive(Serialize, Deserialize)]
+struct TokenPayload {
+    user_id: Uuid,
+}
 #[derive(Debug, Deserialize, Serialize)]
 struct User {
     id: Uuid,
@@ -83,6 +89,8 @@ pub(super) async fn signup(
     State(appstate): State<AppState>,
     Json(signup_info): Json<SignupRequest>,
 ) {
+    let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
+
     let id = is_email_exist(&signup_info.email, &appstate.db_pool)
         .await
         .expect("Failed to retrieve from database"); // sqlx database error
@@ -90,29 +98,59 @@ pub(super) async fn signup(
     let raw_token = encode_token(&token); // used to send as a url in email message
     let hashed_token = hash_token(&token); // store in redis database
     // let hos = hashed_token.to_string();
-    if id.is_some() {
+    if let Some(user_id) = id {
         //the email already exist
-        send_reset_password_message(&signup_info.email, hashed_token);
-    } else {
-        let pending_account = send_verify_email_message(signup_info, raw_token)
-            .await
-            .expect("Failed to send email");
-        store_token_redis(&appstate.redis_pool, hashed_token, &pending_account, 5 * 60)
-            .await
-            .expect("Failed to store in redis ");
+        send_reset_password_message(
+            from_sender,
+            &signup_info.username,
+            raw_token,
+            appstate.mail_client,
+        )
+        .await;
+        store_token_redis(
+            &appstate.redis_pool,
+            hashed_token,
+            &TokenPayload { user_id },
+            5 * 60,
+        )
+        .await
+        .expect("Failed to store in redis ");
+        return;
     }
+    let pending_account = create_account(signup_info).unwrap();
+    store_token_redis(&appstate.redis_pool, hashed_token, &pending_account, 5 * 60)
+        .await
+        .expect("Failed to store in redis ");
+    send_verify_email_signup_message(
+        from_sender,
+        &pending_account.username,
+        raw_token,
+        appstate.mail_client,
+    )
+    .await;
 }
-async fn send_verify_email_message(
-    signup_info: SignupRequest,
+async fn send_verify_email_signup_message(
+    from_sender: String,
+    username: &str,
     raw_token: String,
-) -> Result<PendingSignup, argon2::password_hash::Error> {
-    let new_account = create_account(signup_info).expect("Failed to hash with argon2");
+    client: AsyncSmtpTransport<Tokio1Executor>,
+) {
+    let url_token = format!("verify?token={}", raw_token);
+    let email_body = verification_body(username, &url_token, 5, "family_cloud");
     // send(message)
-
-    Ok(new_account)
+    send_email(from_sender, email_body, client, None).await;
 }
-
-fn send_reset_password_message(email: &str, hashed_token: String) {}
+//confirm-email?token={}
+async fn send_reset_password_message(
+    from_sender: String,
+    username: &str,
+    raw_token: String,
+    client: AsyncSmtpTransport<Tokio1Executor>,
+) {
+    let url_token = format!("reset-password?token={}", raw_token);
+    let email_body = password_reset_body(username, &url_token, 5, "family_cloud");
+    send_email(from_sender, email_body, client, None).await;
+}
 /// if the email is new and not already used !
 fn create_account(
     signup_info: SignupRequest,
