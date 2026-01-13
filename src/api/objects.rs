@@ -1,5 +1,7 @@
 use axum::{Router, routing::get};
 
+use crate::AppState;
+
 //--------------------------------------objects manipulation ----------------------
 
 async fn list_objects_with_metadata() {}
@@ -9,7 +11,7 @@ async fn fetch_metadata() {}
 async fn replace_object() {}
 async fn update_metadata() {}
 async fn delete_object() {}
-pub fn storage_objects() -> Router {
+pub fn storage_objects() -> Router<AppState> {
     Router::new()
         .route(
             "/api/objects",

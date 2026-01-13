@@ -3,12 +3,14 @@ use axum::{
     routing::{get, put},
 };
 
+use crate::AppState;
+
 //------------------------------------user management-------
 
 async fn user_profile() {}
 async fn update_user_profile_info() {}
 async fn change_password() {}
-pub fn user_management() -> Router {
+pub fn user_management() -> Router<AppState> {
     Router::new()
         .route(
             "/api/users/me",
