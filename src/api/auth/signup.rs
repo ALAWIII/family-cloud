@@ -4,15 +4,14 @@ use deadpool_redis::{
     Pool,
     redis::{self, AsyncTypedCommands, RedisError},
 };
-use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, types::Uuid};
 
 use crate::{
-    AppState,
+    AppState, EmailSender,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
-    password_reset_body, send_email, verification_body,
+    password_reset_body, verification_body,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -73,7 +72,19 @@ impl PendingSignup {
         }
     }
 }
-
+#[derive(Serialize)]
+enum SignupPayload {
+    Existing(TokenPayload),
+    New(PendingSignup),
+}
+impl SignupPayload {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        match self {
+            Self::Existing(t) => serde_json::to_string(t),
+            Self::New(p) => serde_json::to_string(p),
+        }
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 enum TokenType {
     SignupVerification,
@@ -91,89 +102,69 @@ pub(super) async fn signup(
 ) {
     let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
 
-    let id = is_email_exist(&signup_info.email, &appstate.db_pool)
+    let user_id = is_email_exist(&signup_info.email, &appstate.db_pool)
         .await
         .expect("Failed to retrieve from database"); // sqlx database error
     let token = generate_token_bytes(32);
     let raw_token = encode_token(&token); // used to send as a url in email message
     let hashed_token = hash_token(&token); // store in redis database
-    // let hos = hashed_token.to_string();
-    if let Some(user_id) = id {
-        //the email already exist
-        send_reset_password_message(
-            from_sender,
-            &signup_info.email,
-            &signup_info.username,
-            raw_token,
-            appstate.mail_client,
-        )
+    let (subject, email_body, payload) =
+        signup_email_type(user_id, &signup_info.username, &raw_token, &signup_info);
+    EmailSender::default()
+        .from_sender(from_sender)
+        .email_recipient(signup_info.email)
+        .msg_id(raw_token)
+        .subject(subject)
+        .email_body(email_body)
+        .send_email(appstate.mail_client)
         .await;
-        store_token_redis(
-            &appstate.redis_pool,
-            hashed_token,
-            &TokenPayload { user_id },
-            5 * 60,
-        )
-        .await
-        .expect("Failed to store in redis ");
-        return;
+    store_token_redis(
+        &appstate.redis_pool,
+        hashed_token,
+        payload
+            .to_json()
+            .expect("failed to convert payload to json string"),
+        5 * 60,
+    )
+    .await
+    .expect("Failed to store token in redis");
+}
+fn signup_email_type(
+    user_id: Option<Uuid>,
+    username: &str,
+    raw_token: &str,
+    signup_info: &SignupRequest,
+) -> (String, String, SignupPayload) {
+    if let Some(user_id) = user_id {
+        return (
+            "signup existing account".to_string(),
+            password_reset_body(
+                username,
+                &format!("reset-password?token={}", raw_token),
+                5,
+                "family_cloud",
+                true,
+            ),
+            SignupPayload::Existing(TokenPayload { user_id }),
+        );
     }
-    let pending_account = create_account(signup_info).unwrap();
-    store_token_redis(&appstate.redis_pool, hashed_token, &pending_account, 5 * 60)
-        .await
-        .expect("Failed to store in redis ");
-    send_verify_email_signup_message(
-        from_sender,
-        &pending_account.email,
-        &pending_account.username,
-        raw_token,
-        appstate.mail_client,
+    (
+        "new account email verification".to_string(),
+        verification_body(
+            username,
+            &format!("verify?token={}", raw_token),
+            5,
+            "family_cloud",
+        ),
+        SignupPayload::New(create_account(signup_info).unwrap()),
     )
-    .await;
 }
-async fn send_verify_email_signup_message(
-    from_sender: String,
-    email_recipient: &str,
-    username: &str,
-    raw_token: String,
-    client: AsyncSmtpTransport<Tokio1Executor>,
-) {
-    let url_token = format!("verify?token={}", raw_token);
-    let email_body = verification_body(username, &url_token, 5, "family_cloud");
-    // send(message)
-    send_email(
-        from_sender,
-        email_body,
-        "email verification",
-        email_recipient,
-        client,
-        Some(raw_token),
-    )
-    .await;
-}
+
 //confirm-email?token={}
-async fn send_reset_password_message(
-    from_sender: String,
-    email_recipient: &str,
-    username: &str,
-    raw_token: String,
-    client: AsyncSmtpTransport<Tokio1Executor>,
-) {
-    let url_token = format!("reset-password?token={}", raw_token);
-    let email_body = password_reset_body(username, &url_token, 5, "family_cloud", true);
-    send_email(
-        from_sender,
-        email_body,
-        "password reset",
-        email_recipient,
-        client,
-        Some(raw_token),
-    )
-    .await;
-}
+
 /// if the email is new and not already used !
 fn create_account(
-    signup_info: SignupRequest,
+    signup_info: &SignupRequest,
 ) -> Result<PendingSignup, argon2::password_hash::Error> {
     let hashed_psswd = hash_password(&signup_info.password)?;
     let pending_account =
@@ -190,17 +181,15 @@ async fn is_email_exist(email: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx
 }
 
 /// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
-async fn store_token_redis<T: Serialize>(
+async fn store_token_redis(
     conn: &Pool,
     key_token: String,
-    content: &T,
+    content: String,
     ttl: u64,
 ) -> Result<(), RedisError> {
-    let json_data = serde_json::to_string(content)
-        .map_err(|_| RedisError::from((redis::ErrorKind::TypeError, "Serialization failed")))?;
     let mut conn = conn
         .get()
         .await
         .expect("Failed to get a connection from pool");
-    conn.set_ex(key_token, json_data, ttl).await
+    conn.set_ex(key_token, content, ttl).await
 }
