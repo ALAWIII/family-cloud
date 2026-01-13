@@ -9,11 +9,11 @@ use signup::*;
 mod utils;
 use axum::{Router, routing::post};
 pub use utils::*;
-
+mod models;
 #[cfg(test)]
 mod tests;
 use crate::AppState;
-
+pub use models::*;
 pub fn authentication() -> Router<AppState> {
     Router::new()
         .route("/api/auth/signup", post(signup))
