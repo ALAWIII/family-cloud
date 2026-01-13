@@ -10,7 +10,12 @@ async fn test_send_email() {
     let msg_id = Uuid::new_v4();
     let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
 
-    let body = verification_body("shawarma", "burger", 55, "family_cloud");
+    let body = verification_body(
+        "shawarma",
+        &format!("token={}", &msg_id.to_string()),
+        55,
+        "family_cloud",
+    );
     let msg = Message::builder()
         .message_id(Some(msg_id.to_string()))
         .from(from_sender.parse().unwrap())
@@ -28,7 +33,7 @@ async fn test_send_email() {
         .expect("Failed to query MailHog API");
     let json: Value = response.json().await.expect("Failed to parse JSON");
     let messages = json["items"].as_array().expect("No messages found");
-
+    //dbg!(&messages[0]);
     assert!(
         messages
             .iter()
