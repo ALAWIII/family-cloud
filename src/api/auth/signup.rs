@@ -138,7 +138,7 @@ async fn send_verify_email_signup_message(
     let url_token = format!("verify?token={}", raw_token);
     let email_body = verification_body(username, &url_token, 5, "family_cloud");
     // send(message)
-    send_email(from_sender, email_body, client, None).await;
+    send_email(from_sender, email_body, client, Some(raw_token)).await;
 }
 //confirm-email?token={}
 async fn send_reset_password_message(
@@ -148,8 +148,8 @@ async fn send_reset_password_message(
     client: AsyncSmtpTransport<Tokio1Executor>,
 ) {
     let url_token = format!("reset-password?token={}", raw_token);
-    let email_body = password_reset_body(username, &url_token, 5, "family_cloud");
-    send_email(from_sender, email_body, client, None).await;
+    let email_body = password_reset_body(username, &url_token, 5, "family_cloud", true);
+    send_email(from_sender, email_body, client, Some(raw_token)).await;
 }
 /// if the email is new and not already used !
 fn create_account(

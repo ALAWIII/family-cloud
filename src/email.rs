@@ -1,4 +1,4 @@
-use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::AsyncSmtpTransportBuilder};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::Deserialize;
 use std::{
@@ -8,39 +8,52 @@ use std::{
 
 static MAIL_CLIENT: OnceLock<AsyncSmtpTransport<Tokio1Executor>> = OnceLock::new();
 
-pub fn verification_body(user_name: &str, url_token: &str, minutes: u32, app: &str) -> String {
+pub fn verification_body(username: &str, url_token: &str, minutes: u32, app: &str) -> String {
     format!(
-        "Hi {user_name},\n\n\
+        "Hi {username},\n\n\
          Thank you for signing up! Please verify your email by clicking:\n\n\
          {url_token}\n\n\
          This link expires in {minutes} minutes.\n\n\
          If you didn't create this account, please ignore this email.\n\n\
          Best regards,\n\
          {app}",
-        user_name = user_name,
+        username = username,
         url_token = url_token,
         minutes = minutes,
         app = app,
     )
 }
-pub fn password_reset_body(user_name: &str, reset_url: &str, minutes: u32, app: &str) -> String {
+pub fn password_reset_body(
+    username: &str,
+    reset_url: &str,
+    minutes: u32,
+    app: &str,
+    on_sginup: bool,
+) -> String {
+    let situation = if on_sginup {
+        "You are trying to signup with an email that is already attached to existing account.\n
+        If you forget your password consider reseting the password and try login again.\n"
+    } else {
+        "We received a request to reset your password."
+    };
     format!(
-        "Hi {user_name},\n\n\
-         We received a request to reset your password. Click the link below:\n\n\
+        "Hi {username},\n\n\
+         {situation} Click the link below to reset password:\n\n\
          {reset_url}\n\n\
          This link expires in {minutes} minutes.\n\n\
          If you didn't request this, please ignore this email. Your password won't change.\n\n\
          Best regards,\n\
          {app}",
-        user_name = user_name,
+        username = username,
         reset_url = reset_url,
         minutes = minutes,
         app = app,
+        situation = situation
     )
 }
-pub fn email_change_body(user_name: &str, confirm_url: &str, minutes: u32, app: &str) -> String {
+pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &str) -> String {
     format!(
-        "Hi {user_name},\n\n\
+        "Hi {username},\n\n\
          You requested to change your email to this address.\n\n\
          Click to confirm:\n\n\
          {confirm_url}\n\n\
@@ -48,7 +61,7 @@ pub fn email_change_body(user_name: &str, confirm_url: &str, minutes: u32, app: 
          If you didn't request this change, contact support immediately.\n\n\
          Best regards,\n\
          {app}",
-        user_name = user_name,
+        username = username,
         confirm_url = confirm_url,
         minutes = minutes,
         app = app,
@@ -80,12 +93,12 @@ impl EmailConfig {
 fn smtp_cfg<'a>(smtp_port: u16) -> (&'a str, &'a str) {
     match smtp_port {
         465 => ("smtps", ""),
-        9999 => ("smtp", ""),
+        1025 => ("smtp", ""),
         _ => ("smtp", "?tls=required"),
     }
 }
 
-fn init_mail_server() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::transport::smtp::Error>
+fn init_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::transport::smtp::Error>
 {
     let email_cfg =
         EmailConfig::from_env().expect("Failed to get env variables and setup email config");
@@ -106,31 +119,22 @@ fn init_mail_server() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::tran
 
 pub fn get_mail_client() -> AsyncSmtpTransport<Tokio1Executor> {
     MAIL_CLIENT
-        .get_or_init(|| init_mail_server().unwrap())
+        .get_or_init(|| init_mail_client().unwrap())
         .clone()
 }
 
-#[cfg(test)]
-mod mail {
-    use super::env_var;
-    use crate::email::{get_mail_client, verification_body};
-    use lettre::{AsyncTransport, Message};
-    use uuid::Uuid;
-
-    #[tokio::test]
-    async fn test_send_email() {
-        dotenv::dotenv().expect("Failed to load env variables ");
-        let msg_id = Uuid::new_v4();
-        let con = get_mail_client();
-        let from_sender = env_var("SMTP_FROM_ADDRESS").unwrap();
-        let body = verification_body("shawarma", "burger", 55, "family_cloud");
-        let msg = Message::builder()
-            .from(from_sender.parse().unwrap())
-            .to("shawarma@potato.com".parse().unwrap())
-            .subject(msg_id.to_string())
-            .body(body)
-            .unwrap();
-
-        con.send(msg).await.expect("Failed to send email msg");
-    }
+pub async fn send_email(
+    from_sender: String,
+    email_body: String,
+    client: AsyncSmtpTransport<Tokio1Executor>,
+    msg_id: Option<String>,
+) {
+    let msg = Message::builder()
+        .message_id(msg_id)
+        .from(from_sender.parse().unwrap())
+        .to("shawarma@potato.com".parse().unwrap())
+        .subject("email verification")
+        .body(email_body.to_string())
+        .unwrap();
+    client.send(msg).await.expect("Failed to send message");
 }
