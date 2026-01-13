@@ -1,16 +1,10 @@
-use axum::{Json, debug_handler, extract::State};
-use deadpool_redis::{
-    Pool,
-    redis::{AsyncTypedCommands, RedisError},
-};
-
-use sqlx::{PgPool, types::Uuid};
-
 use crate::{
     AppState, EmailSender, PendingAccount, SignupPayload, SignupRequest, TokenPayload,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
-    password_reset_body, verification_body,
+    password_reset_body, store_token_redis, verification_body,
 };
+use axum::{Json, debug_handler, extract::State};
+use sqlx::{PgPool, types::Uuid};
 
 /// if email_exist is true then send an email message to tell him that his email is already signup and the token must be used to reset password if he wants too
 ///
@@ -98,18 +92,4 @@ async fn is_email_exist(email: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx
         .fetch_optional(pool)
         .await?;
     Ok(record.map(|v| v.id))
-}
-
-/// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
-async fn store_token_redis(
-    conn: &Pool,
-    key_token: String,
-    content: String,
-    ttl: u64,
-) -> Result<(), RedisError> {
-    let mut conn = conn
-        .get()
-        .await
-        .expect("Failed to get a connection from pool");
-    conn.set_ex(key_token, content, ttl).await
 }
