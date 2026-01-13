@@ -67,7 +67,48 @@ pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &
         app = app,
     )
 }
+#[derive(Debug, Default)]
+pub struct EmailSender {
+    from_sender: String,
+    email_body: String,
+    subject: String,
+    email_recipient: String,
 
+    msg_id: Option<String>,
+}
+impl EmailSender {
+    pub fn from_sender(mut self, from_sender: String) -> Self {
+        self.from_sender = from_sender;
+        self
+    }
+    pub fn email_body(mut self, body: String) -> Self {
+        self.email_body = body;
+        self
+    }
+    pub fn subject(mut self, subject: String) -> Self {
+        self.subject = subject;
+        self
+    }
+    pub fn email_recipient(mut self, email_recipient: String) -> Self {
+        self.email_recipient = email_recipient;
+        self
+    }
+
+    pub fn msg_id(mut self, msg_id: String) -> Self {
+        self.msg_id = Some(msg_id);
+        self
+    }
+    pub async fn send_email(self, client: AsyncSmtpTransport<Tokio1Executor>) {
+        let msg = Message::builder()
+            .message_id(self.msg_id)
+            .from(self.from_sender.parse().unwrap())
+            .to(self.email_recipient.parse().unwrap())
+            .subject(self.subject)
+            .body(self.email_body.to_string())
+            .unwrap();
+        client.send(msg).await.expect("Failed to send message");
+    }
+}
 #[derive(Deserialize)]
 struct EmailConfig {
     smtp_server: String,              // smtp.gmail.com, smtp.office365.com, etc.
