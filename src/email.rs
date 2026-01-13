@@ -126,14 +126,16 @@ pub fn get_mail_client() -> AsyncSmtpTransport<Tokio1Executor> {
 pub async fn send_email(
     from_sender: String,
     email_body: String,
+    subject: &str,
+    email_recipient: &str,
     client: AsyncSmtpTransport<Tokio1Executor>,
     msg_id: Option<String>,
 ) {
     let msg = Message::builder()
         .message_id(msg_id)
         .from(from_sender.parse().unwrap())
-        .to("shawarma@potato.com".parse().unwrap())
-        .subject("email verification")
+        .to(email_recipient.parse().unwrap())
+        .subject(subject)
         .body(email_body.to_string())
         .unwrap();
     client.send(msg).await.expect("Failed to send message");

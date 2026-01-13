@@ -102,6 +102,7 @@ pub(super) async fn signup(
         //the email already exist
         send_reset_password_message(
             from_sender,
+            &signup_info.email,
             &signup_info.username,
             raw_token,
             appstate.mail_client,
@@ -123,6 +124,7 @@ pub(super) async fn signup(
         .expect("Failed to store in redis ");
     send_verify_email_signup_message(
         from_sender,
+        &pending_account.email,
         &pending_account.username,
         raw_token,
         appstate.mail_client,
@@ -131,6 +133,7 @@ pub(super) async fn signup(
 }
 async fn send_verify_email_signup_message(
     from_sender: String,
+    email_recipient: &str,
     username: &str,
     raw_token: String,
     client: AsyncSmtpTransport<Tokio1Executor>,
@@ -138,18 +141,35 @@ async fn send_verify_email_signup_message(
     let url_token = format!("verify?token={}", raw_token);
     let email_body = verification_body(username, &url_token, 5, "family_cloud");
     // send(message)
-    send_email(from_sender, email_body, client, Some(raw_token)).await;
+    send_email(
+        from_sender,
+        email_body,
+        "email verification",
+        email_recipient,
+        client,
+        Some(raw_token),
+    )
+    .await;
 }
 //confirm-email?token={}
 async fn send_reset_password_message(
     from_sender: String,
+    email_recipient: &str,
     username: &str,
     raw_token: String,
     client: AsyncSmtpTransport<Tokio1Executor>,
 ) {
     let url_token = format!("reset-password?token={}", raw_token);
     let email_body = password_reset_body(username, &url_token, 5, "family_cloud", true);
-    send_email(from_sender, email_body, client, Some(raw_token)).await;
+    send_email(
+        from_sender,
+        email_body,
+        "password reset",
+        email_recipient,
+        client,
+        Some(raw_token),
+    )
+    .await;
 }
 /// if the email is new and not already used !
 fn create_account(
