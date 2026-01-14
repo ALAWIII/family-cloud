@@ -7,6 +7,121 @@ use std::{
 };
 
 static MAIL_CLIENT: OnceLock<AsyncSmtpTransport<Tokio1Executor>> = OnceLock::new();
+#[derive(Deserialize)]
+struct EmailConfig {
+    smtp_server: String,              // smtp.gmail.com, smtp.office365.com, etc.
+    smtp_port: u16,                   // 587 or 465
+    smtp_username: String,            // admin email from the smtp_server or an api key
+    smtp_password: SecretBox<String>, // SMTP password
+}
+impl EmailConfig {
+    fn from_env() -> Result<Self, VarError> {
+        let smtp_server = env_var("SMTP_SERVER")?;
+        let smtp_port = env_var("SMTP_PORT")?.parse::<u16>().unwrap_or(587);
+        let smtp_username = env_var("SMTP_USERNAME")?;
+        let smtp_password = env_var("SMTP_PASSWORD")?;
+        Ok(Self {
+            smtp_server,
+            smtp_port,
+            smtp_username,
+            smtp_password: SecretBox::new(Box::new(smtp_password)),
+        })
+    }
+}
+#[derive(Debug, Default)]
+pub struct EmailSender {
+    from_sender: String,
+    email_body: String,
+    subject: String,
+    email_recipient: String,
+
+    msg_id: Option<String>,
+}
+impl EmailSender {
+    pub fn from_sender(mut self, from_sender: String) -> Self {
+        self.from_sender = from_sender;
+        self
+    }
+    pub fn email_body(mut self, body: String) -> Self {
+        self.email_body = body;
+        self
+    }
+    pub fn subject(mut self, subject: String) -> Self {
+        self.subject = subject;
+        self
+    }
+    pub fn email_recipient(mut self, email_recipient: String) -> Self {
+        self.email_recipient = email_recipient;
+        self
+    }
+
+    pub fn msg_id(mut self, msg_id: String) -> Self {
+        self.msg_id = Some(msg_id);
+        self
+    }
+    pub async fn send_email(self, client: AsyncSmtpTransport<Tokio1Executor>) {
+        let msg = Message::builder()
+            .message_id(self.msg_id)
+            .from(self.from_sender.parse().unwrap())
+            .to(self.email_recipient.parse().unwrap())
+            .subject(self.subject)
+            .body(self.email_body.to_string())
+            .unwrap();
+        client.send(msg).await.expect("Failed to send message");
+    }
+}
+
+// needs more care and reconstructions
+fn smtp_cfg<'a>(smtp_port: u16) -> (&'a str, &'a str) {
+    match smtp_port {
+        465 => ("smtps", ""),
+        1025 => ("smtp", ""),
+        _ => ("smtp", "?tls=required"),
+    }
+}
+
+fn init_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::transport::smtp::Error>
+{
+    let email_cfg =
+        EmailConfig::from_env().expect("Failed to get env variables and setup email config");
+    let paswd_encoded = urlencoding::encode(email_cfg.smtp_password.expose_secret());
+    let (scheme, tls_param) = smtp_cfg(email_cfg.smtp_port);
+    let email_url = format!(
+        "{}://{}:{}@{}:{}{}",
+        scheme,
+        email_cfg.smtp_username,
+        paswd_encoded,
+        email_cfg.smtp_server,
+        email_cfg.smtp_port,
+        tls_param
+    );
+
+    Ok(AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_url)?.build())
+}
+
+pub fn get_mail_client() -> AsyncSmtpTransport<Tokio1Executor> {
+    MAIL_CLIENT
+        .get_or_init(|| init_mail_client().unwrap())
+        .clone()
+}
+
+pub async fn send_email(
+    from_sender: String,
+    email_body: String,
+    subject: &str,
+    email_recipient: &str,
+    client: AsyncSmtpTransport<Tokio1Executor>,
+    msg_id: Option<String>,
+) {
+    let msg = Message::builder()
+        .message_id(msg_id)
+        .from(from_sender.parse().unwrap())
+        .to(email_recipient.parse().unwrap())
+        .subject(subject)
+        .body(email_body.to_string())
+        .unwrap();
+    client.send(msg).await.expect("Failed to send message");
+}
 
 pub fn verification_body(username: &str, url_token: &str, minutes: u32, app: &str) -> String {
     format!(
@@ -66,118 +181,4 @@ pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &
         minutes = minutes,
         app = app,
     )
-}
-#[derive(Debug, Default)]
-pub struct EmailSender {
-    from_sender: String,
-    email_body: String,
-    subject: String,
-    email_recipient: String,
-
-    msg_id: Option<String>,
-}
-impl EmailSender {
-    pub fn from_sender(mut self, from_sender: String) -> Self {
-        self.from_sender = from_sender;
-        self
-    }
-    pub fn email_body(mut self, body: String) -> Self {
-        self.email_body = body;
-        self
-    }
-    pub fn subject(mut self, subject: String) -> Self {
-        self.subject = subject;
-        self
-    }
-    pub fn email_recipient(mut self, email_recipient: String) -> Self {
-        self.email_recipient = email_recipient;
-        self
-    }
-
-    pub fn msg_id(mut self, msg_id: String) -> Self {
-        self.msg_id = Some(msg_id);
-        self
-    }
-    pub async fn send_email(self, client: AsyncSmtpTransport<Tokio1Executor>) {
-        let msg = Message::builder()
-            .message_id(self.msg_id)
-            .from(self.from_sender.parse().unwrap())
-            .to(self.email_recipient.parse().unwrap())
-            .subject(self.subject)
-            .body(self.email_body.to_string())
-            .unwrap();
-        client.send(msg).await.expect("Failed to send message");
-    }
-}
-#[derive(Deserialize)]
-struct EmailConfig {
-    smtp_server: String,              // smtp.gmail.com, smtp.office365.com, etc.
-    smtp_port: u16,                   // 587 or 465
-    smtp_username: String,            // admin email from the smtp_server or an api key
-    smtp_password: SecretBox<String>, // SMTP password
-}
-impl EmailConfig {
-    fn from_env() -> Result<Self, VarError> {
-        let smtp_server = env_var("SMTP_SERVER")?;
-        let smtp_port = env_var("SMTP_PORT")?.parse::<u16>().unwrap_or(587);
-        let smtp_username = env_var("SMTP_USERNAME")?;
-        let smtp_password = env_var("SMTP_PASSWORD")?;
-        Ok(Self {
-            smtp_server,
-            smtp_port,
-            smtp_username,
-            smtp_password: SecretBox::new(Box::new(smtp_password)),
-        })
-    }
-}
-
-fn smtp_cfg<'a>(smtp_port: u16) -> (&'a str, &'a str) {
-    match smtp_port {
-        465 => ("smtps", ""),
-        1025 => ("smtp", ""),
-        _ => ("smtp", "?tls=required"),
-    }
-}
-
-fn init_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::transport::smtp::Error>
-{
-    let email_cfg =
-        EmailConfig::from_env().expect("Failed to get env variables and setup email config");
-    let paswd_encoded = urlencoding::encode(email_cfg.smtp_password.expose_secret());
-    let (scheme, tls_param) = smtp_cfg(email_cfg.smtp_port);
-    let email_url = format!(
-        "{}://{}:{}@{}:{}{}",
-        scheme,
-        email_cfg.smtp_username,
-        paswd_encoded,
-        email_cfg.smtp_server,
-        email_cfg.smtp_port,
-        tls_param
-    );
-
-    Ok(AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_url)?.build())
-}
-
-pub fn get_mail_client() -> AsyncSmtpTransport<Tokio1Executor> {
-    MAIL_CLIENT
-        .get_or_init(|| init_mail_client().unwrap())
-        .clone()
-}
-
-pub async fn send_email(
-    from_sender: String,
-    email_body: String,
-    subject: &str,
-    email_recipient: &str,
-    client: AsyncSmtpTransport<Tokio1Executor>,
-    msg_id: Option<String>,
-) {
-    let msg = Message::builder()
-        .message_id(msg_id)
-        .from(from_sender.parse().unwrap())
-        .to(email_recipient.parse().unwrap())
-        .subject(subject)
-        .body(email_body.to_string())
-        .unwrap();
-    client.send(msg).await.expect("Failed to send message");
 }
