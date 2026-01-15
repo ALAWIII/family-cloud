@@ -8,6 +8,7 @@ use deadpool_redis::{
 use family_cloud::{build_router, decode_token, hash_token, init_db, init_redis_pool, init_rustfs};
 use regex::Regex;
 use reqwest::Response;
+use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -121,10 +122,16 @@ pub async fn search_redis_for_hashed_token_id(
     conn.get(hashed_token).await.unwrap()
 }
 fn extract_token_from_body(email_body: &str) -> Option<String> {
-    let re = Regex::new(r"verify\?token=([A-Za-z0-9_-]+)").ok()?;
-    re.captures(email_body)?
-        .get(1)
-        .map(|m| m.as_str().to_string())
+    // Decode quoted-printable
+    let decoded = email_body.replace("=3D", "=").replace("=\n", "");
+
+    let document = Html::parse_document(&decoded);
+    let selector = Selector::parse(r#"a[id="verify-button"]"#).ok()?;
+
+    let element = document.select(&selector).next()?;
+    let href = element.value().attr("href")?;
+
+    href.split("token=").nth(1).map(|s| s.to_string())
 }
 
 pub async fn clean_mailhog(mailhog_id_list: &[(String, String)], app: &AppTest) {
@@ -142,6 +149,6 @@ pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid
     sqlx::query!("select id from users where email=$1", email)
         .fetch_optional(con)
         .await
-        .ok()? // Handle sqlx error
+        .expect("Failed to execute query") // Handle sqlx error
         .map(|record| record.id) // Extract id if found
 }

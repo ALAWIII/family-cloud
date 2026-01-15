@@ -10,8 +10,7 @@ use crate::{
 async fn signup_endpoint() {
     let app = create_app().await;
     let mut redis_conn = get_redis_pool().get().await.unwrap();
-    let verify_url = "/api/auth/verify/signup";
-
+    let verify_url = "/api/auth/signup";
     // === Phase 1: New Account Signup ===
     let response = app.signup_request_new_account().await;
     assert_eq!(
