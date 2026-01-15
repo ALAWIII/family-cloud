@@ -4,10 +4,7 @@ use argon2::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use deadpool_redis::{
-    Pool,
-    redis::{AsyncTypedCommands, RedisError},
-};
+
 use hmac::{Hmac, Mac};
 use rand::{TryRngCore, rngs::OsRng as RandOsRng};
 use secrecy::{ExposeSecret, SecretBox};
@@ -42,6 +39,7 @@ pub fn hmac_token_hex(token: &[u8], secret: &[u8]) -> String {
     let tag = mac.finalize().into_bytes();
     hex::encode(tag) // encodes data to hex strings with lowercase chars
 }
+/// accepts a decoded token as bytes and returns a hashed version of it.
 pub fn hash_token(token: &[u8]) -> String {
     let secret = std::env::var("HMAC_SECRET").expect("Failed to load hmac secret");
     hmac_token_hex(token, secret.as_bytes())
@@ -68,18 +66,4 @@ pub fn verify_password(
     Ok(argon
         .verify_password(password.expose_secret().as_bytes(), &parsed_hash)
         .is_ok())
-}
-
-/// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
-pub async fn store_token_redis(
-    conn: &Pool,
-    key_token: String,
-    content: String,
-    ttl: u64,
-) -> Result<(), RedisError> {
-    let mut conn = conn
-        .get()
-        .await
-        .expect("Failed to get a connection from pool");
-    conn.set_ex(key_token, content, ttl).await
 }
