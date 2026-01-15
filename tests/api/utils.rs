@@ -6,16 +6,18 @@ use deadpool_redis::{
 };
 
 use family_cloud::{build_router, decode_token, hash_token, init_db, init_redis_pool, init_rustfs};
+use regex::Regex;
 use reqwest::Response;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 pub struct AppTest {
     server: TestServer,
-    mailhog_client: reqwest::Client,
-    username: String,
-    email: String,
-    password: String,
+    pub mailhog_client: reqwest::Client,
+    pub username: String,
+    pub email: String,
+    pub password: String,
 }
 
 impl AppTest {
@@ -27,7 +29,7 @@ impl AppTest {
             mailhog_client,
             server,
             username: x.to_string(),
-            email: "shawarma@potato.com".into(),
+            email: format!("{}@potato.com", x),
             password: x.to_string(),
         }
     }
@@ -40,6 +42,12 @@ impl AppTest {
                 "email": self.email,
                 "password": self.password
             }))
+            .await
+    }
+    pub async fn click_verify_url_in_email_message(&self, url: &str, token: &str) -> TestResponse {
+        self.server
+            .get(&format!("{}?token={}", url, token))
+            .add_header("Content-Type", "application/json")
             .await
     }
     pub async fn get_all_messages_mailhog(&self) -> Vec<Value> {
@@ -55,7 +63,7 @@ impl AppTest {
             .expect("No messages found")
             .to_owned()
     }
-    pub async fn delete_messages_mailhog(&self, msg_id: String) -> Response {
+    pub async fn delete_messages_mailhog(&self, msg_id: &str) -> Response {
         self.mailhog_client
             .delete(format!("http://localhost:8025/api/v1/messages/{}", msg_id))
             .send()
@@ -76,10 +84,8 @@ pub async fn create_app() -> AppTest {
     AppTest::new(build_router())
 }
 
-/// fetches the response and extracts every single mail hog message id from `ID` field.
-///
-/// and the assigned token from `Message-ID` header.
-pub fn get_mailhog_msg_id_and_raw_token_list(
+/// Fetches MailHog message ID and extracts token from email body
+pub fn get_mailhog_msg_id_and_extract_raw_token_list(
     msgs: &[Value],
     subject: &str,
 ) -> Vec<(String, String)> {
@@ -90,22 +96,21 @@ pub fn get_mailhog_msg_id_and_raw_token_list(
                 .unwrap()
                 .contains(subject)
             {
-                return Some((
-                    v["ID"].as_str().unwrap().to_string(),
-                    v["Content"]["Headers"]["Message-ID"][0]
-                        .as_str()
-                        .unwrap()
-                        .to_string(),
-                ));
+                let mailhog_id = v["ID"].as_str().unwrap().to_string();
+                let body = v["Content"]["Body"].as_str().unwrap();
+                let raw_token = extract_token_from_body(body)?;
+
+                return Some((mailhog_id, raw_token));
             }
             None
         })
         .collect()
 }
-pub fn get_msg_id_hashed_list(raw_id_list: Vec<&String>) -> Vec<String> {
-    raw_id_list
+
+pub fn convert_raw_tokens_to_hashed(raw_tokens: Vec<&String>) -> Vec<String> {
+    raw_tokens
         .iter()
-        .map(|t| hash_token(&decode_token(&t).unwrap()))
+        .map(|t| hash_token(&decode_token(t).unwrap()))
         .collect()
 }
 
@@ -114,4 +119,29 @@ pub async fn search_redis_for_hashed_token_id(
     conn: &mut Connection,
 ) -> Option<String> {
     conn.get(hashed_token).await.unwrap()
+}
+fn extract_token_from_body(email_body: &str) -> Option<String> {
+    let re = Regex::new(r"verify\?token=([A-Za-z0-9_-]+)").ok()?;
+    re.captures(email_body)?
+        .get(1)
+        .map(|m| m.as_str().to_string())
+}
+
+pub async fn clean_mailhog(mailhog_id_list: &[(String, String)], app: &AppTest) {
+    for (msg_id, _) in mailhog_id_list {
+        assert!(
+            app.delete_messages_mailhog(msg_id)
+                .await
+                .status()
+                .is_success()
+        );
+    }
+}
+
+pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid> {
+    sqlx::query!("select id from users where email=$1", email)
+        .fetch_optional(con)
+        .await
+        .ok()? // Handle sqlx error
+        .map(|record| record.id) // Extract id if found
 }
