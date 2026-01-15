@@ -2,21 +2,22 @@ use axum::{
     Router,
     routing::{get, put},
 };
-use chrono::{DateTime, Utc};
+use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::prelude::FromRow;
 use uuid::Uuid;
 
 use crate::AppState;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct User {
-    id: Uuid,
-    username: String,
-    email: String,
-    password_hash: String,
-    created_at: DateTime<Utc>,
-    storage_quota_bytes: u64,
-    storage_used_bytes: u64,
+#[derive(Debug, Deserialize, Serialize, FromRow)]
+pub struct User {
+    pub id: Uuid,
+    pub username: String,
+    pub email: String,
+    pub password_hash: String,
+    pub created_at: NaiveDateTime,
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
 }
 impl User {
     pub fn new(username: String, email: String, password_hash: String) -> Self {
@@ -25,15 +26,16 @@ impl User {
             username,
             email,
             password_hash,
-            created_at: Utc::now(),
+            created_at: Utc::now().naive_utc(),
             storage_quota_bytes: 2147483648,
             storage_used_bytes: 0,
         }
     }
-    pub fn set_storage_quota_bytes(&mut self, sqb: u64) {
+
+    pub fn set_storage_quota_bytes(&mut self, sqb: i64) {
         self.storage_quota_bytes = sqb;
     }
-    pub fn set_storage_used_bytes(&mut self, sub: u64) {
+    pub fn set_storage_used_bytes(&mut self, sub: i64) {
         self.storage_used_bytes = sub;
     }
 }
