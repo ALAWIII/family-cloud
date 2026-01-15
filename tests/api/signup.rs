@@ -6,61 +6,69 @@ use crate::{
     search_redis_for_hashed_token_id,
 };
 
-async fn account_signup() {
-    let app = create_app().await;
-    let resp = app.signup_request_new_account().await;
-}
-
 #[tokio::test]
-async fn signup_new_account_verify_token() {
-    //verify?token={}
+async fn signup_endpoint() {
     let app = create_app().await;
-    let resp = app.signup_request_new_account().await;
-    let body = resp.text();
+    let mut redis_conn = get_redis_pool().get().await.unwrap();
+    let verify_url = "/api/auth/verify/signup";
+
+    // === Phase 1: New Account Signup ===
+    let response = app.signup_request_new_account().await;
     assert_eq!(
-        body,
+        response.text(),
         "If this email is new, you'll receive a verification email"
     );
 
+    // === Phase 2: Verify Email Sent with Token ===
     let messages = app.get_all_messages_mailhog().await;
-    //dbg!(&messages[0]);
-    let msg_verify_id_list =
-        get_mailhog_msg_id_and_extract_raw_token_list(&messages, "verification"); // official message id , and assigned raw token as a message id
-    let hashed_tokens_list =
-        convert_raw_tokens_to_hashed(msg_verify_id_list.iter().map(|(_, v)| v).collect());
-    let pool = get_redis_pool();
-    let mut con = pool.get().await.unwrap();
-    let url = "/api/auth/verify/signup";
+    let msg_id_token_pairs =
+        get_mailhog_msg_id_and_extract_raw_token_list(&messages, "verification");
+    let hashed_tokens =
+        convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect());
 
-    for msg_id in hashed_tokens_list {
-        // asserts that the token and pending account content are stored temporary in redis
-        let token_payload = search_redis_for_hashed_token_id(&msg_id, &mut con).await;
-        //dbg!(&token_payload);
-        assert!(token_payload.is_some());
+    // === Phase 3: Verify Tokens Stored in Redis ===
+    for hashed_token in &hashed_tokens {
+        let pending_account = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        assert!(
+            pending_account.is_some(),
+            "Token should exist in Redis before verification"
+        );
     }
-    // verify new account by clicking the url+token inside email message
-    for (_, raw_token) in &msg_verify_id_list {
-        // verify the signup
-        app.click_verify_url_in_email_message(url, raw_token)
+
+    // === Phase 4: Complete Verification ===
+    for (_, raw_token) in &msg_id_token_pairs {
+        app.click_verify_url_in_email_message(verify_url, raw_token)
             .await
             .assert_status_ok();
     }
-    // clean mailhog messages list
-    // used to make sure that the user account is stored after finishing the verification proccess
+
+    // Verify account now exists in database
+    let user_id = search_database_for_email(&get_db(), &app.email).await;
     assert!(
-        search_database_for_email(&get_db(), &app.email)
-            .await
-            .is_some()
+        user_id.is_some(),
+        "Account should be created after verification"
     );
-    clean_mailhog(&msg_verify_id_list, &app).await;
 
-    //dbg!(v);
-}
+    // === Phase 5: Test Existing Account Protection ===
+    app.signup_request_new_account().await.assert_status_ok();
 
-//#[tokio::test]
-async fn signup_existing_account_token() {
-    // it must store the verified account in database so that it can continue to use is_email_exist
-    let app = create_app().await;
-    app.signup_request_new_account();
-    app.signup_request_new_account();
+    // Should not send new email for existing account
+    let messages_after = app.get_all_messages_mailhog().await;
+    assert_eq!(
+        messages_after.len(),
+        1,
+        "No new email should be sent for existing account"
+    );
+
+    // Tokens should be removed from Redis after verification
+    for hashed_token in &hashed_tokens {
+        let token = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        assert!(
+            token.is_none(),
+            "Token should be removed from Redis after verification"
+        );
+    }
+
+    // === Cleanup ===
+    clean_mailhog(&msg_id_token_pairs, &app).await;
 }
