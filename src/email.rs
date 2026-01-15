@@ -138,22 +138,10 @@ pub fn verification_body(username: &str, url_token: &str, minutes: u32, app: &st
         app = app,
     )
 }
-pub fn password_reset_body(
-    username: &str,
-    reset_url: &str,
-    minutes: u32,
-    app: &str,
-    on_sginup: bool,
-) -> String {
-    let situation = if on_sginup {
-        "You are trying to signup with an email that is already attached to existing account.\n
-        If you forget your password consider reseting the password and try login again.\n"
-    } else {
-        "We received a request to reset your password."
-    };
+pub fn password_reset_body(username: &str, reset_url: &str, minutes: u32, app: &str) -> String {
     format!(
         "Hi {username},\n\n\
-         {situation} Click the link below to reset password:\n\n\
+         We received a request to reset your password. Click the link below to reset password:\n\n\
          {reset_url}\n\n\
          This link expires in {minutes} minutes.\n\n\
          If you didn't request this, please ignore this email. Your password won't change.\n\n\
@@ -163,7 +151,6 @@ pub fn password_reset_body(
         reset_url = reset_url,
         minutes = minutes,
         app = app,
-        situation = situation
     )
 }
 pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &str) -> String {
