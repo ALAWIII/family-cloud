@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use chrono::{NaiveDateTime, Utc};
 use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
@@ -82,4 +84,26 @@ pub struct Credentials {
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
     pub token: String,
+}
+#[derive(Debug, Clone, Copy)]
+pub enum TokenType {
+    Signup,
+    PasswordReset,
+    EmailChange,
+}
+impl Display for TokenType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::EmailChange => "email_change",
+                Self::Signup => "signup",
+                Self::PasswordReset => "password_reset",
+            }
+        )
+    }
+}
+pub fn create_verification_key(hashed_token: &str, token_type: TokenType) -> String {
+    format!("verify:{}:{}", token_type, hashed_token)
 }
