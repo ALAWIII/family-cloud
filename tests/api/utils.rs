@@ -1,50 +1,71 @@
 use axum::Router;
 use axum_test::{TestResponse, TestServer};
-use deadpool_redis::{
-    Connection,
-    redis::{AsyncTypedCommands, TypedCommands},
-};
+use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
-use family_cloud::{build_router, decode_token, hash_token, init_db, init_redis_pool, init_rustfs};
-use regex::Regex;
+use family_cloud::{
+    TokenType, build_router, create_verification_key, decode_token, get_db, get_redis_pool,
+    hash_token, init_db, init_redis_pool, init_rustfs,
+};
 use reqwest::Response;
 use scraper::{Html, Selector};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 pub struct AppTest {
     server: TestServer,
     pub mailhog_client: reqwest::Client,
+}
+#[derive(Debug, Serialize)]
+pub struct UserTest {
     pub username: String,
     pub email: String,
     pub password: String,
+}
+impl UserTest {
+    pub fn new(username: &str, email: &str, password: &str) -> Self {
+        Self {
+            username: username.into(),
+            email: email.into(),
+            password: password.into(),
+        }
+    }
+}
+impl Default for UserTest {
+    fn default() -> Self {
+        let x = Uuid::new_v4();
+        Self {
+            username: x.to_string(),
+            email: format!("{}@potato.com", x),
+            password: x.to_string(),
+        }
+    }
+}
+
+pub struct SignupTestSession {
+    pub app: AppTest,
+    pub user: UserTest,
 }
 
 impl AppTest {
     pub fn new(app: Router) -> Self {
         let mailhog_client = reqwest::Client::new();
         let server = TestServer::new(app).unwrap();
-        let x = Uuid::new_v4();
+
         Self {
             mailhog_client,
             server,
-            username: x.to_string(),
-            email: format!("{}@potato.com", x),
-            password: x.to_string(),
         }
     }
-    pub async fn signup_request_new_account(&self) -> TestResponse {
+    pub async fn signup_request_new_account<T: Serialize>(&self, user: &T) -> TestResponse {
         self.server
             .post("/api/auth/signup")
             .add_header("Content-Type", "application/json")
-            .json(&json!({
-                "username": self.username,
-                "email": self.email,
-                "password": self.password
-            }))
+            .json(user)
             .await
     }
+
     pub async fn click_verify_url_in_email_message(&self, url: &str, token: &str) -> TestResponse {
         self.server
             .get(&format!("{}?token={}", url, token))
@@ -151,4 +172,78 @@ pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid
         .await
         .expect("Failed to execute query") // Handle sqlx error
         .map(|record| record.id) // Extract id if found
+}
+
+pub async fn create_new_verified_account() -> SignupTestSession {
+    let app = create_app().await;
+    let user = UserTest::default();
+    let token_type = TokenType::Signup;
+    let mut redis_conn = get_redis_pool().get().await.unwrap();
+    let verify_url = "/api/auth/signup";
+    // === Phase 1: New Account Signup ===
+    let response = app.signup_request_new_account(&user).await; //
+    assert_eq!(
+        response.text(),
+        "If this email is new, you'll receive a verification email"
+    );
+
+    // === Phase 2: Verify Email Sent with Token ===
+    let messages = app.get_all_messages_mailhog().await;
+    let msg_id_token_pairs =
+        get_mailhog_msg_id_and_extract_raw_token_list(&messages, "verification");
+    let hashed_tokens: Vec<String> =
+        convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect())
+            .iter()
+            .map(|v| create_verification_key(v, token_type))
+            .collect();
+
+    // === Phase 3: Verify Tokens Stored in Redis ===
+    for hashed_token in &hashed_tokens {
+        let pending_account = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        assert!(
+            pending_account.is_some(),
+            "Token should exist in Redis before verification"
+        );
+    }
+
+    // === Phase 4: Complete Verification ===
+    for (_, raw_token) in &msg_id_token_pairs {
+        app.click_verify_url_in_email_message(verify_url, raw_token)
+            .await
+            .assert_status_ok();
+    }
+
+    // Verify account now exists in database
+    let user_id = search_database_for_email(&get_db(), &user.email).await;
+    assert!(
+        user_id.is_some(),
+        "Account should be created after verification"
+    );
+
+    // === Phase 5: Test Existing Account Protection ===
+    app.signup_request_new_account(&user)
+        .await
+        .assert_status_ok();
+
+    // Should not send new email for existing account
+    let messages_after = app.get_all_messages_mailhog().await;
+    assert_eq!(
+        messages_after.len(),
+        1,
+        "No new email should be sent for existing account"
+    );
+
+    // Tokens should be removed from Redis after verification
+    for hashed_token in &hashed_tokens {
+        // dbg!(hashed_token);
+        let token = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        assert!(
+            token.is_none(),
+            "Token should be removed from Redis after verification"
+        );
+    }
+
+    // === Cleanup ===
+    clean_mailhog(&msg_id_token_pairs, &app).await;
+    SignupTestSession { app, user }
 }
