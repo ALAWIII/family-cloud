@@ -7,13 +7,15 @@ use axum::{
     http::StatusCode,
     response::Html,
 };
+use secrecy::{SecretBox, SecretString};
 use serde::Deserialize;
 
 use crate::{
     AppState, EmailSender, PasswordRequestReset, PasswordUserReset, TokenQuery,
-    create_verification_key, decode_token, encode_token, generate_token_bytes,
-    get_user_password_reset_info_by_email, hash_token, is_token_exist, password_reset_body,
-    store_token_redis,
+    create_verification_key, decode_token, delete_token_from_redis, encode_token,
+    generate_token_bytes, get_user_password_reset_info_by_email, get_verification_data,
+    hash_password, hash_token, is_token_exist, password_reset_body, store_token_redis,
+    update_password,
 };
 #[derive(Deserialize)]
 pub struct PasswordResetForm {
@@ -99,5 +101,39 @@ pub async fn verify_password_reset(
 pub async fn confirm_password_reset(
     State(appstate): State<AppState>,
     Form(form): Form<PasswordResetForm>,
-) {
+) -> (StatusCode, &'static str) {
+    if form.new_password != form.confirm_password {
+        return (StatusCode::BAD_REQUEST, "Passwords do not match");
+    }
+    let token_byte = decode_token(&form.token).expect("Failed to decode raw token to bytes");
+    let hashed_token = hash_token(&token_byte);
+    let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
+    let redis_con = appstate
+        .redis_pool
+        .get()
+        .await
+        .expect("Failed to get connection ");
+    let user_data = get_verification_data(&key, redis_con)
+        .await
+        .map(|v| PasswordUserReset::from_str(&v).expect("Failed to deserialize content"));
+    if user_data.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Your request expired. Please request a new password reset link.",
+        );
+    }
+    let password_hash = hash_password(&SecretBox::new(Box::new(form.new_password)))
+        .expect("Failed to hash password");
+    update_password(&appstate.db_pool, user_data.unwrap().id, &password_hash).await;
+    delete_token_from_redis(
+        appstate
+            .redis_pool
+            .get()
+            .await
+            .expect("Failed to get connection "),
+        &hashed_token,
+    )
+    .await
+    .expect("Failed to delete token");
+    (StatusCode::OK, "Password updated successfully")
 }
