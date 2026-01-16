@@ -17,8 +17,8 @@
 ## 2. User clicks the email link
 
 - **Frontend:** Extracts `token` from URL
-- **Action:** `POST /api/auth/consume`
-- **Body:** `{ "token": "<token>" }`
+- **Action:** `GET /api/auth/verify/password-reset?token={}`
+- **Body:** ``
 - **Server checks:** `token.expired()?`
   - **If true:**
     - Return `400 Bad Request`
@@ -26,6 +26,8 @@
   - **If false:**
     - Return `200 OK`
     - Frontend shows **"Enter new password"** page/form
+    - ask the user to fill in new password in a password box
+    - when the user click `confirm` the token extracted from url and new password must be sent to the righ endpoint
 
 ---
 
