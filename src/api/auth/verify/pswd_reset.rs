@@ -1,16 +1,34 @@
 use std::time::Duration;
 
+use askama::Template;
 use axum::{
-    Json,
+    Form, Json,
     extract::{Query, State},
     http::StatusCode,
+    response::Html,
 };
+use serde::Deserialize;
 
 use crate::{
-    AppState, EmailSender, PasswordRequestReset, TokenQuery, create_verification_key, decode_token,
-    encode_token, generate_token_bytes, get_user_password_reset_info_by_email, hash_token,
-    password_reset_body, search_redis_for_token, store_token_redis,
+    AppState, EmailSender, PasswordRequestReset, PasswordUserReset, TokenQuery,
+    create_verification_key, decode_token, encode_token, generate_token_bytes,
+    get_user_password_reset_info_by_email, hash_token, is_token_exist, password_reset_body,
+    store_token_redis,
 };
+#[derive(Deserialize)]
+pub struct PasswordResetForm {
+    token: String,
+    new_password: String,
+    confirm_password: String,
+}
+#[derive(Template)]
+#[template(path = "pswd_reset_form.html")]
+struct PasswordResetTemplate<'a> {
+    token: &'a str,
+}
+fn password_form_page(token: &str) -> Html<String> {
+    Html(PasswordResetTemplate { token }.render().unwrap())
+}
 
 pub async fn password_rest(
     State(appstate): State<AppState>,
@@ -56,5 +74,30 @@ pub async fn password_rest(
 
     (StatusCode::OK, "If account exists, check your email".into())
 }
-
-pub async fn confirm_password_reset() {}
+pub async fn verify_password_reset(
+    State(appstate): State<AppState>,
+    Query(raw_token): Query<TokenQuery>,
+) -> Result<Html<String>, (StatusCode, &'static str)> {
+    let decoded_token = decode_token(&raw_token.token).expect("Faield to convert to bytes");
+    let hashed_token = hash_token(&decoded_token);
+    let token_exist = is_token_exist(
+        &create_verification_key(&hashed_token, crate::TokenType::PasswordReset),
+        appstate
+            .redis_pool
+            .get()
+            .await
+            .expect("Failed to obtain redis connection"),
+    )
+    .await;
+    token_exist
+        .then(|| password_form_page(&raw_token.token))
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "Your request expired. Please request a new password reset link.",
+        ))
+}
+pub async fn confirm_password_reset(
+    State(appstate): State<AppState>,
+    Form(form): Form<PasswordResetForm>,
+) {
+}
