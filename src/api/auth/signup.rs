@@ -1,8 +1,9 @@
 use crate::{
     AppState, EmailSender, PendingAccount, SignupRequest, TokenQuery, User,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
-    decode_token, insert_new_account, remove_verified_account_from_redis, search_for_user_by_email,
-    search_redis_for_token, store_token_redis, verification_body,
+    create_verification_key, decode_token, insert_new_account, is_account_exist,
+    remove_verified_account_from_redis, search_redis_for_token, store_token_redis,
+    verification_body,
 };
 use axum::{
     Json, debug_handler,
@@ -20,7 +21,7 @@ pub(super) async fn signup(
 ) -> (StatusCode, String) {
     let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
 
-    let user_id = search_for_user_by_email(&appstate.db_pool, &signup_info.email).await; // sqlx database error
+    let user_id = is_account_exist(&appstate.db_pool, &signup_info.email).await; // sqlx database error
     if user_id.is_none() {
         let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
         // if email is new
@@ -41,7 +42,7 @@ pub(super) async fn signup(
                 .get()
                 .await
                 .expect("Failed to obtain a redis connection from the pool"),
-            hashed_token,
+            create_verification_key(&hashed_token, crate::TokenType::Signup),
             &pending_account,
             5 * 60,
         )
@@ -86,9 +87,12 @@ pub async fn verify_signup_token(
     let decoded = decode_token(&token.token).unwrap();
     let hashed_token = hash_token(&decoded);
     let account: PendingAccount = serde_json::from_str(
-        &search_redis_for_token(&hashed_token, redis_con)
-            .await
-            .expect("fail to find a pending account"),
+        &search_redis_for_token(
+            &create_verification_key(&hashed_token, crate::TokenType::Signup),
+            redis_con,
+        )
+        .await
+        .expect("fail to find a pending account"),
     )
     .expect("failed to deserialize");
     let user = User::new(account.username, account.email, account.password_hash);
