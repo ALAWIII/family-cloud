@@ -34,6 +34,10 @@ impl User {
         self.storage_used_bytes = sub;
     }
 }
+#[derive(Debug, Deserialize)]
+pub struct PasswordRequestReset {
+    pub email: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PasswordUserReset {
@@ -44,7 +48,6 @@ pub struct PasswordUserReset {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PendingAccount {
-    pub token_type: TokenType,
     pub username: String,
     pub email: String,
     pub password_hash: String, // store hashed, not plain
@@ -52,7 +55,6 @@ pub struct PendingAccount {
 impl PendingAccount {
     pub fn new(username: &str, email: &str, hashed_password: String) -> Self {
         Self {
-            token_type: TokenType::SignupVerification,
             username: username.into(),
             email: email.into(),
             password_hash: hashed_password,
@@ -70,28 +72,6 @@ pub struct SignupRequest {
     pub username: String,
     pub email: String,
     pub password: SecretBox<String>, // Received as plain text
-}
-
-#[derive(Serialize)]
-pub enum SignupPayload {
-    Existing(TokenPayload),
-    New(PendingAccount),
-}
-impl SignupPayload {
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        match self {
-            Self::Existing(t) => serde_json::to_string(t),
-            Self::New(p) => serde_json::to_string(p),
-        }
-    }
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub enum TokenType {
-    SignupVerification,
-    PasswordReset,
-    EmailChange,
-    Refresh,
-    Access,
 }
 
 /// used only on login !!!
