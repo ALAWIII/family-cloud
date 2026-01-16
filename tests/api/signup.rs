@@ -1,4 +1,4 @@
-use family_cloud::{get_db, get_redis_pool};
+use family_cloud::{create_verification_key, get_db, get_redis_pool};
 
 use crate::{
     clean_mailhog, convert_raw_tokens_to_hashed, create_app,
@@ -27,7 +27,11 @@ async fn signup_endpoint() {
 
     // === Phase 3: Verify Tokens Stored in Redis ===
     for hashed_token in &hashed_tokens {
-        let pending_account = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        let pending_account = search_redis_for_hashed_token_id(
+            &create_verification_key(hashed_token, family_cloud::TokenType::Signup),
+            &mut redis_conn,
+        )
+        .await;
         assert!(
             pending_account.is_some(),
             "Token should exist in Redis before verification"
