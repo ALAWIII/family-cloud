@@ -1,5 +1,5 @@
 use crate::{
-    AppState, EmailSender, PendingAccount, SignupRequest, User,
+    AppState, EmailSender, PendingAccount, SignupRequest, TokenQuery, User,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
     decode_token, insert_new_account, remove_verified_account_from_redis, search_for_user_by_email,
     search_redis_for_token, store_token_redis, verification_body,
@@ -9,12 +9,6 @@ use axum::{
     extract::{Query, State},
     http::status::StatusCode,
 };
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-pub struct TokenQuery {
-    pub token: String,
-}
 
 /// if email_exist is true then send an email message to tell him that his email is already signup and the token must be used to reset password if he wants too
 ///
