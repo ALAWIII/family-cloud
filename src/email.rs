@@ -1,4 +1,6 @@
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
+};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::Deserialize;
 use std::{
@@ -34,7 +36,6 @@ pub struct EmailSender {
     email_body: String,
     subject: String,
     email_recipient: String,
-
     msg_id: Option<String>,
 }
 impl EmailSender {
@@ -59,14 +60,17 @@ impl EmailSender {
         self.msg_id = Some(msg_id);
         self
     }
+
     pub async fn send_email(self, client: AsyncSmtpTransport<Tokio1Executor>) {
         let msg = Message::builder()
             .message_id(self.msg_id)
             .from(self.from_sender.parse().unwrap())
             .to(self.email_recipient.parse().unwrap())
             .subject(self.subject)
+            .header(ContentType::TEXT_HTML)
             .body(self.email_body.to_string())
             .unwrap();
+
         client.send(msg).await.expect("Failed to send message");
     }
 }
@@ -125,44 +129,102 @@ pub async fn send_email(
 
 pub fn verification_body(username: &str, url_token: &str, minutes: u32, app: &str) -> String {
     format!(
-        "Hi {username},\n\n\
-         Thank you for signing up! Please verify your email by clicking:\n\n\
-         {url_token}\n\n\
-         This link expires in {minutes} minutes.\n\n\
-         If you didn't create this account, please ignore this email.\n\n\
-         Best regards,\n\
-         {app}",
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 12px 24px; background-color: #007bff; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
+        .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }}
+    </style>
+</head>
+<body>
+    <h2>Welcome to {app}!</h2>
+    <p>Hi {username},</p>
+    <p>Thank you for signing up! To get started, please verify your email address by clicking the button below:</p>
+    <p><a id="verify-button" href="{url_token}" class="button">Verify Email Address</a></p>
+    <p>Or copy and paste this link into your browser:<br>
+    <code>{url_token}</code></p>
+    <p><strong>This link expires in {minutes} minutes.</strong></p>
+    <p>If you didn't create this account, you can safely ignore this email.</p>
+    <div class="footer">
+        <p>Best regards,<br>The {app} Team</p>
+    </div>
+</body>
+</html>"#,
         username = username,
         url_token = url_token,
         minutes = minutes,
         app = app,
     )
 }
+
 pub fn password_reset_body(username: &str, reset_url: &str, minutes: u32, app: &str) -> String {
     format!(
-        "Hi {username},\n\n\
-         We received a request to reset your password. Click the link below to reset password:\n\n\
-         {reset_url}\n\n\
-         This link expires in {minutes} minutes.\n\n\
-         If you didn't request this, please ignore this email. Your password won't change.\n\n\
-         Best regards,\n\
-         {app}",
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 12px 24px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
+        .warning {{ background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin: 20px 0; }}
+        .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }}
+    </style>
+</head>
+<body>
+    <h2>Password Reset Request</h2>
+    <p>Hi {username},</p>
+    <p>We received a request to reset your password for your {app} account. Click the button below to create a new password:</p>
+    <p><a id="verify-button" href="{reset_url}" class="button">Reset Password</a></p>
+    <p>Or copy and paste this link into your browser:<br>
+    <code>{reset_url}</code></p>
+    <p><strong>This link expires in {minutes} minutes.</strong></p>
+    <div class="warning">
+        <strong>⚠️ Important:</strong> If you didn't request a password reset, please ignore this email. Your password will remain unchanged and your account is secure.
+    </div>
+    <div class="footer">
+        <p>Best regards,<br>The {app} Team</p>
+    </div>
+</body>
+</html>"#,
         username = username,
         reset_url = reset_url,
         minutes = minutes,
         app = app,
     )
 }
+
 pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &str) -> String {
     format!(
-        "Hi {username},\n\n\
-         You requested to change your email to this address.\n\n\
-         Click to confirm:\n\n\
-         {confirm_url}\n\n\
-         This link expires in {minutes} minutes.\n\n\
-         If you didn't request this change, contact support immediately.\n\n\
-         Best regards,\n\
-         {app}",
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 12px 24px; background-color: #28a745; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
+        .alert {{ background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 12px; margin: 20px 0; }}
+        .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }}
+    </style>
+</head>
+<body>
+    <h2>Email Address Change Request</h2>
+    <p>Hi {username},</p>
+    <p>You requested to change your {app} account email address to this address. To confirm this change, please click the button below:</p>
+    <p><a id="verify-button" href="{confirm_url}" class="button">Confirm Email Change</a></p>
+    <p>Or copy and paste this link into your browser:<br>
+    <code>{confirm_url}</code></p>
+    <p><strong>This link expires in {minutes} minutes.</strong></p>
+    <div class="alert">
+        <strong>🚨 Security Alert:</strong> If you didn't request this email change, someone may be trying to access your account. Please contact our support team immediately and consider changing your password.
+    </div>
+    <div class="footer">
+        <p>Best regards,<br>The {app} Team</p>
+    </div>
+</body>
+</html>"#,
         username = username,
         confirm_url = confirm_url,
         minutes = minutes,
