@@ -10,9 +10,8 @@ use axum::{
     http::status::StatusCode,
 };
 use serde::Deserialize;
-use sqlx::{PgPool, types::Uuid};
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct TokenQuery {
     pub token: String,
 }
@@ -29,6 +28,7 @@ pub(super) async fn signup(
 
     let user_id = search_for_user_by_email(&appstate.db_pool, &signup_info.email).await; // sqlx database error
     if user_id.is_none() {
+        let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
         // if email is new
         let token = generate_token_bytes(32);
         let raw_token = encode_token(&token); // used to send as a url in email message
@@ -36,17 +36,11 @@ pub(super) async fn signup(
         let pending_account = create_account(&signup_info).unwrap();
         let email_body = verification_body(
             &signup_info.username,
-            &format!("verify?token={}", raw_token),
+            &format!("{}/api/auth/signup?token={}", base_url, raw_token),
             5,
             "family_cloud",
         );
-        EmailSender::default()
-            .from_sender(from_sender)
-            .email_recipient(signup_info.email)
-            .subject("new account email verification".to_string())
-            .email_body(email_body)
-            .send_email(appstate.mail_client)
-            .await;
+        //---------------------------------
         store_token_redis(
             appstate
                 .redis_pool
@@ -59,6 +53,14 @@ pub(super) async fn signup(
         )
         .await
         .expect("Failed to store token in redis");
+        //-------------------------
+        EmailSender::default()
+            .from_sender(from_sender)
+            .email_recipient(signup_info.email)
+            .subject("new account email verification".to_string())
+            .email_body(email_body)
+            .send_email(appstate.mail_client)
+            .await;
     } else {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -85,6 +87,7 @@ pub async fn verify_signup_token(
     State(appstate): State<AppState>,
     Query(token): Query<TokenQuery>,
 ) {
+    //  dbg!(&token);
     let redis_con = appstate.redis_pool.get().await.unwrap();
     let decoded = decode_token(&token.token).unwrap();
     let hashed_token = hash_token(&decoded);
