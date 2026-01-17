@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn password_reset() {
+async fn password_reset_endpoint() {
     let app = create_app().await;
     let user = create_verified_account(&get_db()).await;
     let response = app.password_reset_request(&user.email).await;
