@@ -18,13 +18,13 @@ pub struct AppTest {
     pub mailhog_client: reqwest::Client,
 }
 #[derive(Debug, Serialize)]
-pub struct UserTest {
+pub struct TestAccount {
     pub id: Uuid,
     pub username: String,
     pub email: String,
     pub password: String,
 }
-impl UserTest {
+impl TestAccount {
     pub fn new(id: Uuid, username: &str, email: &str, password: &str) -> Self {
         Self {
             id,
@@ -34,7 +34,7 @@ impl UserTest {
         }
     }
 }
-impl Default for UserTest {
+impl Default for TestAccount {
     fn default() -> Self {
         let x = Uuid::new_v4();
         Self {
@@ -48,7 +48,7 @@ impl Default for UserTest {
 
 pub struct SignupTestSession {
     pub app: AppTest,
-    pub user: UserTest,
+    pub user: TestAccount,
 }
 
 impl AppTest {
@@ -72,6 +72,21 @@ impl AppTest {
         self.server
             .post("/api/auth/password-reset")
             .json(&json!({"email":email}))
+            .await
+    }
+    pub async fn password_reset_confirm(
+        &self,
+        raw_token: &str,
+        new_password: &str,
+        confirm_password: &str,
+    ) -> TestResponse {
+        self.server
+            .post("/api/auth/password-reset/confirm")
+            .form(&[
+                ("token", raw_token),
+                ("new_password", new_password),
+                ("confirm_password", confirm_password),
+            ])
             .await
     }
     pub async fn click_verify_url_in_email_message(&self, url: &str, token: &str) -> TestResponse {
@@ -182,8 +197,8 @@ pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid
         .map(|record| record.id) // Extract id if found
 }
 
-pub async fn create_verified_account(con: &PgPool) -> UserTest {
-    let user = UserTest::default();
+pub async fn create_verified_account(con: &PgPool) -> TestAccount {
+    let user = TestAccount::default();
     sqlx::query!(
         "insert into users (id,username,email,password_hash) Values($1,$2,$3,$4)",
         user.id,
