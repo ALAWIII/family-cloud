@@ -9,7 +9,7 @@ use family_cloud::{
 use reqwest::Response;
 use scraper::{Html, Selector};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -19,13 +19,15 @@ pub struct AppTest {
 }
 #[derive(Debug, Serialize)]
 pub struct UserTest {
+    pub id: Uuid,
     pub username: String,
     pub email: String,
     pub password: String,
 }
 impl UserTest {
-    pub fn new(username: &str, email: &str, password: &str) -> Self {
+    pub fn new(id: Uuid, username: &str, email: &str, password: &str) -> Self {
         Self {
+            id,
             username: username.into(),
             email: email.into(),
             password: password.into(),
@@ -36,6 +38,7 @@ impl Default for UserTest {
     fn default() -> Self {
         let x = Uuid::new_v4();
         Self {
+            id: x,
             username: x.to_string(),
             email: format!("{}@potato.com", x),
             password: x.to_string(),
@@ -65,7 +68,12 @@ impl AppTest {
             .json(user)
             .await
     }
-
+    pub async fn password_reset_request(&self, email: &str) -> TestResponse {
+        self.server
+            .post("/api/auth/password-reset")
+            .json(&json!({"email":email}))
+            .await
+    }
     pub async fn click_verify_url_in_email_message(&self, url: &str, token: &str) -> TestResponse {
         self.server
             .get(&format!("{}?token={}", url, token))
@@ -174,76 +182,17 @@ pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid
         .map(|record| record.id) // Extract id if found
 }
 
-pub async fn create_new_verified_account() -> SignupTestSession {
-    let app = create_app().await;
+pub async fn create_verified_account(con: &PgPool) -> UserTest {
     let user = UserTest::default();
-    let token_type = TokenType::Signup;
-    let mut redis_conn = get_redis_pool().get().await.unwrap();
-    let verify_url = "/api/auth/signup";
-    // === Phase 1: New Account Signup ===
-    let response = app.signup_request_new_account(&user).await; //
-    assert_eq!(
-        response.text(),
-        "If this email is new, you'll receive a verification email"
-    );
-
-    // === Phase 2: Verify Email Sent with Token ===
-    let messages = app.get_all_messages_mailhog().await;
-    let msg_id_token_pairs =
-        get_mailhog_msg_id_and_extract_raw_token_list(&messages, "verification");
-    let hashed_tokens: Vec<String> =
-        convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect())
-            .iter()
-            .map(|v| create_verification_key(v, token_type))
-            .collect();
-
-    // === Phase 3: Verify Tokens Stored in Redis ===
-    for hashed_token in &hashed_tokens {
-        let pending_account = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
-        assert!(
-            pending_account.is_some(),
-            "Token should exist in Redis before verification"
-        );
-    }
-
-    // === Phase 4: Complete Verification ===
-    for (_, raw_token) in &msg_id_token_pairs {
-        app.click_verify_url_in_email_message(verify_url, raw_token)
-            .await
-            .assert_status_ok();
-    }
-
-    // Verify account now exists in database
-    let user_id = search_database_for_email(&get_db(), &user.email).await;
-    assert!(
-        user_id.is_some(),
-        "Account should be created after verification"
-    );
-
-    // === Phase 5: Test Existing Account Protection ===
-    app.signup_request_new_account(&user)
-        .await
-        .assert_status_ok();
-
-    // Should not send new email for existing account
-    let messages_after = app.get_all_messages_mailhog().await;
-    assert_eq!(
-        messages_after.len(),
-        1,
-        "No new email should be sent for existing account"
-    );
-
-    // Tokens should be removed from Redis after verification
-    for hashed_token in &hashed_tokens {
-        // dbg!(hashed_token);
-        let token = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
-        assert!(
-            token.is_none(),
-            "Token should be removed from Redis after verification"
-        );
-    }
-
-    // === Cleanup ===
-    clean_mailhog(&msg_id_token_pairs, &app).await;
-    SignupTestSession { app, user }
+    sqlx::query!(
+        "insert into users (id,username,email,password_hash) Values($1,$2,$3,$4)",
+        user.id,
+        user.username,
+        user.email,
+        user.password
+    )
+    .execute(con)
+    .await
+    .unwrap();
+    user
 }
