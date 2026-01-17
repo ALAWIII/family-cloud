@@ -42,10 +42,17 @@ pub async fn store_token_redis<T: Serialize>(
     conn.set_ex(key_token, content, ttl).await
 }
 
-pub async fn search_redis_for_token(hashed_token: &str, mut con: Connection) -> Option<String> {
-    con.get(hashed_token).await.unwrap()
+pub async fn is_token_exist(hashed_token: &str, mut con: Connection) -> bool {
+    con.exists(hashed_token)
+        .await
+        .expect("Failed to execute command")
 }
-pub async fn remove_verified_account_from_redis(
+pub async fn get_verification_data(hashed_token: &str, mut con: Connection) -> Option<String> {
+    con.get(hashed_token)
+        .await
+        .expect("Failed to execute command")
+}
+pub async fn delete_token_from_redis(
     mut con: Connection,
     hashed_token: &str,
 ) -> Result<(), RedisError> {
