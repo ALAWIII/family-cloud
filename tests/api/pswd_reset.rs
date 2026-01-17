@@ -1,4 +1,5 @@
 use family_cloud::{create_verification_key, get_db, get_redis_pool};
+use reqwest::StatusCode;
 
 use crate::{
     clean_mailhog, convert_raw_tokens_to_hashed, create_app, create_verified_account,
@@ -46,10 +47,28 @@ async fn password_reset_endpoint() {
         response.assert_status_ok();
         let html_password_form = response.text();
         assert!(!html_password_form.is_empty());
+        // chicking mismatched passwords
+        let mismatched_resp = app
+            .password_reset_confirm(raw_token, "password1", "password2")
+            .await;
+        assert_eq!(mismatched_resp.text(), "Passwords do not match");
+        //-------------------------adding the new password-----------
+        mismatched_resp.assert_status(StatusCode::BAD_REQUEST);
         app.password_reset_confirm(raw_token, "shakashaka", "shakashaka")
             .await
             .assert_status_ok();
+
+        // re-using the same token again , it must be deleted from redis so that recieving bad request
+        let confirm_resp = app
+            .password_reset_confirm(raw_token, "newpass", "newpass")
+            .await;
+        assert_eq!(
+            confirm_resp.text(),
+            "Your request expired. Please request a new password reset link."
+        );
+        confirm_resp.assert_status(StatusCode::BAD_REQUEST);
     }
+
     // === Phase 5: Verify Tokens are Deleted from Redis ===
     for hashed_token in &hashed_tokens {
         let password_reset = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
