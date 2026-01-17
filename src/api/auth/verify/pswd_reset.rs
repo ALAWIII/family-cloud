@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use askama::Template;
 use axum::{
@@ -7,7 +7,7 @@ use axum::{
     http::StatusCode,
     response::Html,
 };
-use secrecy::{SecretBox, SecretString};
+use secrecy::SecretBox;
 use serde::Deserialize;
 
 use crate::{
@@ -17,6 +17,8 @@ use crate::{
     hash_password, hash_token, is_token_exist, password_reset_body, store_token_redis,
     update_password,
 };
+const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
+
 #[derive(Deserialize)]
 pub struct PasswordResetForm {
     token: String,
@@ -32,7 +34,7 @@ fn password_form_page(token: &str) -> Html<String> {
     Html(PasswordResetTemplate { token }.render().unwrap())
 }
 
-pub async fn password_rest(
+pub async fn password_reset(
     State(appstate): State<AppState>,
     Json(pswd_info): Json<PasswordRequestReset>,
 ) -> (StatusCode, String) {
@@ -45,7 +47,7 @@ pub async fn password_rest(
         let token = generate_token_bytes(32);
         let raw_token = encode_token(&token);
         let hashed_token = hash_token(&token);
-
+        let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
         //---------------------
         store_token_redis(
             appstate
@@ -53,7 +55,7 @@ pub async fn password_rest(
                 .get()
                 .await
                 .expect("Failed to obtain a redis connection"),
-            create_verification_key(&hashed_token, crate::TokenType::PasswordReset),
+            key,
             &user_info,
             5 * 60,
         )
@@ -71,7 +73,7 @@ pub async fn password_rest(
             .send_email(appstate.mail_client)
             .await;
     } else {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(fastrand::u64(80..120))).await;
     }
 
     (StatusCode::OK, "If account exists, check your email".into())
@@ -82,8 +84,9 @@ pub async fn verify_password_reset(
 ) -> Result<Html<String>, (StatusCode, &'static str)> {
     let decoded_token = decode_token(&raw_token.token).expect("Faield to convert to bytes");
     let hashed_token = hash_token(&decoded_token);
+    let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
     let token_exist = is_token_exist(
-        &create_verification_key(&hashed_token, crate::TokenType::PasswordReset),
+        &key,
         appstate
             .redis_pool
             .get()
@@ -93,10 +96,7 @@ pub async fn verify_password_reset(
     .await;
     token_exist
         .then(|| password_form_page(&raw_token.token))
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            "Your request expired. Please request a new password reset link.",
-        ))
+        .ok_or((StatusCode::BAD_REQUEST, EXPIRED_TOKEN_MSG))
 }
 pub async fn confirm_password_reset(
     State(appstate): State<AppState>,
@@ -117,10 +117,7 @@ pub async fn confirm_password_reset(
         .await
         .map(|v| PasswordUserReset::from_str(&v).expect("Failed to deserialize content"));
     if user_data.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Your request expired. Please request a new password reset link.",
-        );
+        return (StatusCode::BAD_REQUEST, EXPIRED_TOKEN_MSG);
     }
     let password_hash = hash_password(&SecretBox::new(Box::new(form.new_password)))
         .expect("Failed to hash password");
@@ -131,7 +128,7 @@ pub async fn confirm_password_reset(
             .get()
             .await
             .expect("Failed to get connection "),
-        &hashed_token,
+        &key,
     )
     .await
     .expect("Failed to delete token");
