@@ -11,11 +11,10 @@ use secrecy::SecretBox;
 use serde::Deserialize;
 
 use crate::{
-    AppState, EmailSender, PasswordRequestReset, PasswordUserReset, TokenQuery,
-    create_verification_key, decode_token, delete_token_from_redis, encode_token,
-    generate_token_bytes, get_user_password_reset_info_by_email, get_verification_data,
-    hash_password, hash_token, is_token_exist, password_reset_body, store_token_redis,
-    update_password,
+    AppState, EmailInput, EmailSender, TokenQuery, UserVerification, create_verification_key,
+    decode_token, delete_token_from_redis, encode_token, generate_token_bytes,
+    get_account_info_by_email, get_verification_data, hash_password, hash_token, is_token_exist,
+    password_reset_body, store_token_redis, update_account_password,
 };
 const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
 
@@ -36,10 +35,10 @@ fn password_form_page(token: &str) -> Html<String> {
 
 pub async fn password_reset(
     State(appstate): State<AppState>,
-    Json(pswd_info): Json<PasswordRequestReset>,
+    Json(pswd_info): Json<EmailInput>,
 ) -> (StatusCode, String) {
-    let user_info =
-        get_user_password_reset_info_by_email(&appstate.db_pool, &pswd_info.email).await;
+    let user_info: Option<UserVerification> =
+        get_account_info_by_email(&appstate.db_pool, &pswd_info.email).await;
     if let Some(user_info) = user_info {
         let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
 
@@ -47,10 +46,10 @@ pub async fn password_reset(
         let token = generate_token_bytes(32);
         let raw_token = encode_token(&token);
         let hashed_token = hash_token(&token);
-        let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
+        let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
         //---------------------
         store_token_redis(
-            appstate
+            &mut appstate
                 .redis_pool
                 .get()
                 .await
@@ -84,14 +83,14 @@ pub async fn verify_password_reset(
 ) -> Result<Html<String>, (StatusCode, &'static str)> {
     let decoded_token = decode_token(&raw_token.token).expect("Faield to convert to bytes");
     let hashed_token = hash_token(&decoded_token);
-    let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
+    let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
     let token_exist = is_token_exist(
-        &key,
-        appstate
+        &mut appstate
             .redis_pool
             .get()
             .await
             .expect("Failed to obtain redis connection"),
+        &key,
     )
     .await;
     token_exist
@@ -107,30 +106,23 @@ pub async fn confirm_password_reset(
     }
     let token_byte = decode_token(&form.token).expect("Failed to decode raw token to bytes");
     let hashed_token = hash_token(&token_byte);
-    let key = create_verification_key(&hashed_token, crate::TokenType::PasswordReset);
-    let redis_con = appstate
+    let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
+    let mut redis_con = appstate
         .redis_pool
         .get()
         .await
         .expect("Failed to get connection ");
-    let user_data = get_verification_data(&key, redis_con)
+    let user_data = get_verification_data(&mut redis_con, &key)
         .await
-        .map(|v| PasswordUserReset::from_str(&v).expect("Failed to deserialize content"));
+        .map(|v| UserVerification::from_str(&v).expect("Failed to deserialize content"));
     if user_data.is_none() {
         return (StatusCode::BAD_REQUEST, EXPIRED_TOKEN_MSG);
     }
     let password_hash = hash_password(&SecretBox::new(Box::new(form.new_password)))
         .expect("Failed to hash password");
-    update_password(&appstate.db_pool, user_data.unwrap().id, &password_hash).await;
-    delete_token_from_redis(
-        appstate
-            .redis_pool
-            .get()
-            .await
-            .expect("Failed to get connection "),
-        &key,
-    )
-    .await
-    .expect("Failed to delete token");
+    update_account_password(&appstate.db_pool, user_data.unwrap().id, &password_hash).await;
+    delete_token_from_redis(&mut redis_con, &key)
+        .await
+        .expect("Failed to delete token");
     (StatusCode::OK, "Password updated successfully")
 }

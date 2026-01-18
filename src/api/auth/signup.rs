@@ -1,9 +1,8 @@
 use crate::{
     AppState, EmailSender, PendingAccount, SignupRequest, TokenQuery, User,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
-    create_verification_key, decode_token, insert_new_account, is_account_exist,
-    remove_verified_account_from_redis, search_redis_for_token, store_token_redis,
-    verification_body,
+    create_verification_key, decode_token, delete_token_from_redis, get_verification_data,
+    insert_new_account, is_account_exist, store_token_redis, verification_body,
 };
 use axum::{
     Json, debug_handler,
@@ -37,12 +36,12 @@ pub(super) async fn signup(
         );
         //---------------------------------
         store_token_redis(
-            appstate
+            &mut appstate
                 .redis_pool
                 .get()
                 .await
                 .expect("Failed to obtain a redis connection from the pool"),
-            create_verification_key(&hashed_token, crate::TokenType::Signup),
+            create_verification_key(crate::TokenType::Signup, &hashed_token),
             &pending_account,
             5 * 60,
         )
@@ -83,23 +82,19 @@ pub async fn verify_signup_token(
     Query(token): Query<TokenQuery>,
 ) {
     //  dbg!(&token);
-    let redis_con = appstate.redis_pool.get().await.unwrap();
+    let mut redis_con = appstate.redis_pool.get().await.unwrap();
     let decoded = decode_token(&token.token).unwrap();
     let hashed_token = hash_token(&decoded);
+    let key = create_verification_key(crate::TokenType::Signup, &hashed_token);
     let account: PendingAccount = serde_json::from_str(
-        &search_redis_for_token(
-            &create_verification_key(&hashed_token, crate::TokenType::Signup),
-            redis_con,
-        )
-        .await
-        .expect("fail to find a pending account"),
+        &get_verification_data(&mut redis_con, &key)
+            .await
+            .expect("fail to find a pending account"),
     )
     .expect("failed to deserialize");
     let user = User::new(account.username, account.email, account.password_hash);
     insert_new_account(user, &appstate.db_pool)
         .await
         .expect("Failed to insert into database");
-    remove_verified_account_from_redis(appstate.redis_pool.get().await.unwrap(), &hashed_token)
-        .await
-        .unwrap()
+    delete_token_from_redis(&mut redis_con, &key).await.unwrap()
 }
