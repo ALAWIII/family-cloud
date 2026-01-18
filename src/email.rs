@@ -231,3 +231,42 @@ pub fn email_change_body(username: &str, confirm_url: &str, minutes: u32, app: &
         app = app,
     )
 }
+
+pub fn email_cancel_body(username: &str, cancel_url: &str, minutes: u32, app: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 12px 24px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
+        .alert {{ background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; margin: 20px 0; }}
+        .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }}
+    </style>
+</head>
+<body>
+    <h2>Email Change Request Detected</h2>
+    <p>Hi {username},</p>
+    <p>A request was made to change your {app} account email address. If this was you, no action is needed—simply verify the change using the link sent to your new email address.</p>
+    <div class="alert">
+        <strong>⚠️ Didn't request this change?</strong><br>
+        If you did not initiate this email change, your account may be at risk. Click the button below to cancel this request immediately:
+    </div>
+    <p><a id="verify-button" href="{cancel_url}" class="button">Cancel Email Change</a></p>
+    <p>Or copy and paste this link into your browser:<br>
+    <code>{cancel_url}</code></p>
+    <p><strong>This link expires in {minutes} minutes.</strong> After that, the change request will be automatically cancelled if not verified.</p>
+    <p>If you cancelled this request or it expires, we recommend changing your password as a security precaution.</p>
+    <div class="footer">
+        <p>Best regards,<br>The {app} Team</p>
+        <p style="color: #999;">This is an automated security notification. Please do not reply to this email.</p>
+    </div>
+</body>
+</html>"#,
+        username = username,
+        cancel_url = cancel_url,
+        minutes = minutes,
+        app = app,
+    )
+}
