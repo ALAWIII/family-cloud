@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
-use crate::{User, UserVerification};
+use crate::{LoginCredentials, User, UserVerification};
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
@@ -98,8 +98,15 @@ pub async fn update_account_email(
         .await
 }
 
-pub async fn get_hashed_pswd(con: &PgPool, email: &str) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar!("SELECT password_hash from users where email=$1", email)
-        .fetch_optional(con)
-        .await
+pub async fn fetch_user_credentials(
+    con: &PgPool,
+    email: &str,
+) -> Result<Option<LoginCredentials>, sqlx::Error> {
+    sqlx::query_as!(
+        LoginCredentials,
+        "SELECT id,password_hash from users where email=$1",
+        email
+    )
+    .fetch_optional(con)
+    .await
 }
