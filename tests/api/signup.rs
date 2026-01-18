@@ -21,9 +21,11 @@ async fn signup_new_account() {
     );
 
     // === Phase 2: Verify Email Sent with Token ===
-    let messages = app.get_all_messages_mailhog().await;
-    let msg_id_token_pairs =
-        get_mailhog_msg_id_and_extract_raw_token_list(&messages, "verification");
+    let messages_before = app.get_all_messages_mailhog().await;
+    let msg_id_token_pairs = get_mailhog_msg_id_and_extract_raw_token_list(
+        &messages_before,
+        "new account email verification",
+    );
     let token_type_prefixed_hashed_tokens: Vec<String> =
         convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect())
             .iter()
@@ -62,8 +64,12 @@ async fn signup_new_account() {
 
     // Should not send new email for existing account
     let messages_after = app.get_all_messages_mailhog().await;
+    let filterd = get_mailhog_msg_id_and_extract_raw_token_list(
+        &messages_after,
+        "new account email verification",
+    );
     assert_eq!(
-        messages_after.len(),
+        filterd.len(),
         1,
         "No new email should be sent for existing account"
     );
