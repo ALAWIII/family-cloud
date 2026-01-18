@@ -87,10 +87,17 @@ pub struct SignupRequest {
     pub password: SecretBox<String>, // Received as plain text
 }
 
-/// used only on login !!!
+/// used only on login request !!!
+#[derive(Debug, Deserialize)]
 pub struct Credentials {
     pub email: String,
     pub password: SecretBox<String>,
+}
+/// used to fetch database , the id will be used as content to refresh token in redis !
+#[derive(Debug, Deserialize)]
+pub struct LoginCredentials {
+    pub id: Uuid,
+    pub password_hash: String,
 }
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
