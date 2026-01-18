@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use chrono::{NaiveDateTime, Utc};
 use secrecy::SecretBox;
@@ -37,15 +37,31 @@ impl User {
     }
 }
 #[derive(Debug, Deserialize)]
-pub struct PasswordRequestReset {
+pub struct EmailInput {
     pub email: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PasswordUserReset {
+pub struct UserVerification {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+}
+impl UserVerification {
+    pub fn new(id: Uuid, username: &str, email: &str) -> Self {
+        Self {
+            id,
+            username: username.into(),
+            email: email.into(),
+        }
+    }
+}
+
+impl FromStr for UserVerification {
+    type Err = serde_json::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,11 +78,6 @@ impl PendingAccount {
             password_hash: hashed_password,
         }
     }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct TokenPayload {
-    pub user_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +101,8 @@ pub enum TokenType {
     Signup,
     PasswordReset,
     EmailChange,
+    Refresh,
+    Access,
 }
 impl Display for TokenType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -100,10 +113,36 @@ impl Display for TokenType {
                 Self::EmailChange => "email_change",
                 Self::Signup => "signup",
                 Self::PasswordReset => "password_reset",
+                Self::Refresh => "refresh",
+                Self::Access => "access",
             }
         )
     }
 }
-pub fn create_verification_key(hashed_token: &str, token_type: TokenType) -> String {
-    format!("verify:{}:{}", token_type, hashed_token)
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Claims {
+    pub sub: Uuid, // user ID
+    pub username: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+impl Claims {
+    /// default exp = 900 seconds = 15 minutes
+    pub fn new(sub: Uuid, username: String) -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            sub,
+            username,
+            iat: now,
+            exp: now + 900,
+        }
+    }
+    pub fn with_expiry(mut self, seconds: i64) -> Self {
+        self.exp = self.iat + seconds;
+        self
+    }
+}
+pub fn create_verification_key(token_type: TokenType, hashed_token: &str) -> String {
+    format!("{}:{}", token_type, hashed_token)
 }
