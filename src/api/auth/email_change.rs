@@ -1,9 +1,14 @@
-use axum::{Extension, Json, debug_handler, extract::State, http::StatusCode};
+use axum::{
+    Extension, Json, debug_handler,
+    extract::{Query, State},
+    http::StatusCode,
+};
 
 use crate::{
-    AppState, Claims, EmailInput, EmailSender, UserVerification, create_verification_key,
-    email_cancel_body, email_change_body, encode_token, generate_token_bytes, get_email_by_id,
-    hash_token, is_account_exist, store_token_redis,
+    AppState, Claims, EmailInput, EmailSender, TokenQuery, UserVerification,
+    create_verification_key, decode_token, delete_token_from_redis, email_cancel_body,
+    email_change_body, encode_token, generate_token_bytes, get_email_by_id, get_verification_data,
+    hash_token, is_account_exist, store_token_redis, update_account_email,
 };
 
 #[debug_handler]
@@ -33,7 +38,7 @@ pub async fn change_email(
 
     //--------------------storing token in redis ------------------
     store_token_redis(
-        appstate
+        &mut appstate
             .redis_pool
             .get()
             .await
@@ -81,6 +86,35 @@ pub async fn change_email(
         .await;
     Ok(StatusCode::ACCEPTED)
 }
-pub async fn verify_change_email() {}
+pub async fn verify_change_email(
+    State(appstate): State<AppState>,
+    Query(raw_token): Query<TokenQuery>,
+) -> Result<StatusCode, StatusCode> {
+    let mut redis_connection = appstate
+        .redis_pool
+        .get()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let token_bytes =
+        decode_token(&raw_token.token).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let hashed_token = hash_token(&token_bytes);
+    let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
+
+    let data = get_verification_data(&mut redis_connection, &key)
+        .await
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user_data: UserVerification =
+        serde_json::from_str(&data).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let result = update_account_email(&appstate.db_pool, user_data.id, &user_data.email)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() != 1 {
+        return Err(StatusCode::NOT_FOUND); // User doesn't exist
+    }
+    delete_token_from_redis(&mut redis_connection, &key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
 
 pub async fn cancel_change_email() {}
