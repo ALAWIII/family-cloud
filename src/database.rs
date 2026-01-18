@@ -84,3 +84,8 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Option<Uuid> {
         .await
         .expect("Failed to execute query")
 }
+pub async fn get_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!("select email from users where id=$1", id)
+        .fetch_optional(con)
+        .await
+}
