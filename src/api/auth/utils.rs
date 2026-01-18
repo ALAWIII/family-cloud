@@ -2,13 +2,16 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
+use jsonwebtoken::{EncodingKey, Header, encode};
+use secrecy::{ExposeSecret, SecretBox};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use hmac::{Hmac, Mac};
 use rand::{TryRngCore, rngs::OsRng as RandOsRng};
-use secrecy::{ExposeSecret, SecretBox};
 use sha2::Sha256;
+
+use crate::{Claims, User};
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
@@ -43,6 +46,21 @@ pub fn hmac_token_hex(token: &[u8], secret: &[u8]) -> String {
 pub fn hash_token(token: &[u8]) -> String {
     let secret = std::env::var("HMAC_SECRET").expect("Failed to load hmac secret");
     hmac_token_hex(token, secret.as_bytes())
+}
+//-------------------------------
+
+pub fn create_access_token(
+    user: &User,
+    seconds: i64,
+    secret_key: SecretBox<String>,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let claims = Claims::new(user.id, user.username.to_string()).with_expiry(seconds);
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret_key.expose_secret().as_bytes()),
+    )
 }
 
 //------------------------------- user password hashing -------------------
