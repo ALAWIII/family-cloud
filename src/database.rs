@@ -52,10 +52,8 @@ pub async fn search_for_account_by_email(con: &PgPool, email: &str) -> Option<Us
         .ok()
         .flatten()
 }
-pub async fn get_account_password_reset_info_by_email(
-    con: &PgPool,
-    email: &str,
-) -> Option<UserVerification> {
+/// fetches (id,username,email) searched by email
+pub async fn get_account_info_by_email(con: &PgPool, email: &str) -> Option<UserVerification> {
     sqlx::query_as!(
         UserVerification,
         "SELECT id,username,email FROM users WHERE email = $1",
@@ -86,6 +84,22 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Option<Uuid> {
 }
 pub async fn get_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar!("select email from users where id=$1", id)
+        .fetch_optional(con)
+        .await
+}
+
+pub async fn update_account_email(
+    con: &PgPool,
+    id: Uuid,
+    email: &str,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query!("UPDATE users SET email=$2 where id=$1", id, email)
+        .execute(con)
+        .await
+}
+
+pub async fn get_hashed_pswd(con: &PgPool, email: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT password_hash from users where email=$1", email)
         .fetch_optional(con)
         .await
 }
