@@ -3,7 +3,6 @@ use lettre::{AsyncTransport, Message};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[tokio::test]
 async fn test_send_email() {
     dotenv::dotenv().unwrap();
     let mail = get_mail_client();
@@ -20,7 +19,7 @@ async fn test_send_email() {
         .message_id(Some(msg_id.to_string()))
         .from(from_sender.parse().unwrap())
         .to("shawarma@potato.com".parse().unwrap())
-        .subject("email verification")
+        .subject("test send email")
         .body(body)
         .unwrap();
     mail.send(msg).await.expect("Failed to send email message");

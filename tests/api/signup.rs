@@ -27,7 +27,7 @@ async fn signup_new_account() {
     let token_type_prefixed_hashed_tokens: Vec<String> =
         convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect())
             .iter()
-            .map(|v| create_verification_key(v, token_type))
+            .map(|v| create_verification_key(token_type, v))
             .collect();
 
     // === Phase 3: Verify Tokens Stored in Redis ===

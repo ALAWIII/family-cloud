@@ -27,7 +27,7 @@ async fn password_reset_endpoint() {
             .collect(),
     )
     .iter()
-    .map(|v| create_verification_key(v, token_type))
+    .map(|v| create_verification_key(token_type, v))
     .collect();
     // === Phase 3: Verify Tokens Stored in Redis ===
     for hashed_token in &hashed_tokens {

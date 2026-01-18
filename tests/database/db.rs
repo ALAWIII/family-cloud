@@ -10,7 +10,7 @@ async fn db_connection() {
     assert!(!pool.is_closed());
 
     let result: i32 = sqlx::query_scalar("SELECT 1")
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await
         .expect("Failed to execute test query");
 
