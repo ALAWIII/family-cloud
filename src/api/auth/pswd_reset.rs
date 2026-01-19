@@ -11,10 +11,10 @@ use secrecy::SecretBox;
 use serde::Deserialize;
 
 use crate::{
-    AppState, EmailInput, EmailSender, TokenQuery, UserVerification, create_verification_key,
-    decode_token, delete_token_from_redis, encode_token, generate_token_bytes,
-    get_account_info_by_email, get_verification_data, hash_password, hash_token, is_token_exist,
-    password_reset_body, store_token_redis, update_account_password,
+    AppState, EmailInput, EmailSender, TokenQuery, User, UserVerification, create_verification_key,
+    decode_token, delete_token_from_redis, encode_token, fetch_account_info, generate_token_bytes,
+    get_verification_data, hash_password, hash_token, is_token_exist, password_reset_body,
+    store_token_redis, update_account_password,
 };
 const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
 
@@ -36,9 +36,10 @@ fn password_form_page(token: &str) -> Html<String> {
 pub async fn password_reset(
     State(appstate): State<AppState>,
     Json(pswd_info): Json<EmailInput>,
-) -> (StatusCode, String) {
-    let user_info: Option<UserVerification> =
-        get_account_info_by_email(&appstate.db_pool, &pswd_info.email).await;
+) -> Result<StatusCode, StatusCode> {
+    let user_info: Option<User> = fetch_account_info(&appstate.db_pool, &pswd_info.email)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(user_info) = user_info {
         let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
 
@@ -54,7 +55,7 @@ pub async fn password_reset(
                 .get()
                 .await
                 .expect("Failed to obtain a redis connection"),
-            key,
+            &key,
             &user_info,
             5 * 60,
         )
@@ -74,8 +75,9 @@ pub async fn password_reset(
     } else {
         tokio::time::sleep(Duration::from_millis(fastrand::u64(80..120))).await;
     }
+    Ok(StatusCode::OK)
 
-    (StatusCode::OK, "If account exists, check your email".into())
+    //  (, "If account exists, check your email".into())
 }
 pub async fn verify_password_reset(
     State(appstate): State<AppState>,

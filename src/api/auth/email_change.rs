@@ -7,8 +7,9 @@ use axum::{
 use crate::{
     AppState, Claims, EmailInput, EmailSender, TokenQuery, UserVerification,
     create_verification_key, decode_token, delete_token_from_redis, email_cancel_body,
-    email_change_body, encode_token, generate_token_bytes, get_email_by_id, get_verification_data,
-    hash_token, is_account_exist, is_token_exist, store_token_redis, update_account_email,
+    email_change_body, encode_token, fetch_email_by_id, generate_token_bytes,
+    get_verification_data, hash_token, is_account_exist, is_token_exist, store_token_redis,
+    update_account_email,
 };
 
 #[debug_handler]
@@ -17,12 +18,14 @@ pub async fn change_email(
     State(appstate): State<AppState>,
     Json(email_info): Json<EmailInput>,
 ) -> Result<StatusCode, StatusCode> {
-    let user_id = is_account_exist(&appstate.db_pool, &email_info.email).await;
+    let user_id = is_account_exist(&appstate.db_pool, &email_info.email)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if user_id.is_some() {
         // check if email exist
         return Err(StatusCode::CONFLICT);
     }
-    let old_email = get_email_by_id(&appstate.db_pool, claims.sub)
+    let old_email = fetch_email_by_id(&appstate.db_pool, claims.sub)
         .await
         .map_err(|e| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -43,7 +46,7 @@ pub async fn change_email(
             .get()
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        key,
+        &key,
         &content,
         10 * 60,
     )

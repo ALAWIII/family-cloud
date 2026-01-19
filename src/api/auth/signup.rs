@@ -17,10 +17,12 @@ use axum::{
 pub(super) async fn signup(
     State(appstate): State<AppState>,
     Json(signup_info): Json<SignupRequest>,
-) -> (StatusCode, String) {
+) -> Result<StatusCode, StatusCode> {
     let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
 
-    let user_id = is_account_exist(&appstate.db_pool, &signup_info.email).await; // sqlx database error
+    let user_id = is_account_exist(&appstate.db_pool, &signup_info.email)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?; // sqlx database error
     if user_id.is_none() {
         let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
         // if email is new
@@ -41,7 +43,7 @@ pub(super) async fn signup(
                 .get()
                 .await
                 .expect("Failed to obtain a redis connection from the pool"),
-            create_verification_key(crate::TokenType::Signup, &hashed_token),
+            &create_verification_key(crate::TokenType::Signup, &hashed_token),
             &pending_account,
             5 * 60,
         )
@@ -58,9 +60,9 @@ pub(super) async fn signup(
     } else {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-    (
+    Ok(
         StatusCode::OK,
-        "If this email is new, you'll receive a verification email".to_string(),
+        //"If this email is new, you'll receive a verification email".to_string(),
     )
 }
 
