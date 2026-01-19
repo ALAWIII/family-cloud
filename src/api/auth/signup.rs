@@ -1,5 +1,5 @@
 use crate::{
-    AppState, EmailSender, PendingAccount, SignupRequest, TokenQuery, User,
+    AppState, EmailSender, PendingAccount, SignupRequest, TokenPayload, User,
     api::{encode_token, generate_token_bytes, hash_password, hash_token},
     create_verification_key, decode_token, delete_token_from_redis, get_verification_data,
     insert_new_account, is_account_exist, store_token_redis, verification_body,
@@ -9,6 +9,7 @@ use axum::{
     extract::{Query, State},
     http::status::StatusCode,
 };
+use secrecy::ExposeSecret;
 
 /// if email_exist is true then send an email message to tell him that his email is already signup and the token must be used to reset password if he wants too
 ///
@@ -81,11 +82,11 @@ fn create_account(
 #[debug_handler]
 pub async fn verify_signup_token(
     State(appstate): State<AppState>,
-    Query(token): Query<TokenQuery>,
+    Query(token): Query<TokenPayload>,
 ) {
     //  dbg!(&token);
     let mut redis_con = appstate.redis_pool.get().await.unwrap();
-    let decoded = decode_token(&token.token).unwrap();
+    let decoded = decode_token(token.token.expose_secret()).unwrap();
     let hashed_token = hash_token(&decoded);
     let key = create_verification_key(crate::TokenType::Signup, &hashed_token);
     let account: PendingAccount = serde_json::from_str(

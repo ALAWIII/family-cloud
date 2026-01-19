@@ -7,14 +7,14 @@ use axum::{
     http::StatusCode,
     response::Html,
 };
-use secrecy::SecretBox;
+use secrecy::{ExposeSecret, SecretBox};
 use serde::Deserialize;
 
 use crate::{
-    AppState, EmailInput, EmailSender, TokenQuery, User, UserVerification, create_verification_key,
-    decode_token, delete_token_from_redis, encode_token, fetch_account_info, generate_token_bytes,
-    get_verification_data, hash_password, hash_token, is_token_exist, password_reset_body,
-    store_token_redis, update_account_password,
+    AppState, EmailInput, EmailSender, TokenPayload, User, UserVerification,
+    create_verification_key, decode_token, delete_token_from_redis, encode_token,
+    fetch_account_info, generate_token_bytes, get_verification_data, hash_password, hash_token,
+    is_token_exist, password_reset_body, store_token_redis, update_account_password,
 };
 const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
 
@@ -81,9 +81,10 @@ pub async fn password_reset(
 }
 pub async fn verify_password_reset(
     State(appstate): State<AppState>,
-    Query(raw_token): Query<TokenQuery>,
+    Query(raw_token): Query<TokenPayload>,
 ) -> Result<Html<String>, (StatusCode, &'static str)> {
-    let decoded_token = decode_token(&raw_token.token).expect("Faield to convert to bytes");
+    let decoded_token =
+        decode_token(raw_token.token.expose_secret()).expect("Faield to convert to bytes");
     let hashed_token = hash_token(&decoded_token);
     let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
     let token_exist = is_token_exist(
@@ -96,7 +97,7 @@ pub async fn verify_password_reset(
     )
     .await;
     token_exist
-        .then(|| password_form_page(&raw_token.token))
+        .then(|| password_form_page(raw_token.token.expose_secret()))
         .ok_or((StatusCode::BAD_REQUEST, EXPIRED_TOKEN_MSG))
 }
 pub async fn confirm_password_reset(
