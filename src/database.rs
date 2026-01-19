@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
 use uuid::Uuid;
 
-use crate::{LoginCredentials, User, UserVerification};
+use crate::User;
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
@@ -44,45 +44,25 @@ pub async fn insert_new_account(user: User, db_pool: &PgPool) -> Result<(), sqlx
     Ok(())
 }
 
-/// used on login to retreive user information as response to user request
-pub async fn search_for_account_by_email(con: &PgPool, email: &str) -> Option<User> {
-    sqlx::query_as!(User, "select * from users where email=$1", email)
-        .fetch_optional(con)
-        .await
-        .ok()
-        .flatten()
-}
-/// fetches (id,username,email) searched by email
-pub async fn get_account_info_by_email(con: &PgPool, email: &str) -> Option<UserVerification> {
+pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as!(
-        UserVerification,
-        "SELECT id,username,email FROM users WHERE email = $1",
+        User,
+        "SELECT id, username, email, password_hash, created_at,
+                storage_quota_bytes, storage_used_bytes
+         FROM users WHERE email = $1",
         email
     )
     .fetch_optional(con)
     .await
-    .ok()
-    .flatten()
 }
 
-pub async fn update_account_password(con: &PgPool, user_id: Uuid, password_hash: &str) {
-    sqlx::query!(
-        "UPDATE  users SET password_hash=$1 where id=$2",
-        password_hash,
-        user_id
-    )
-    .execute(con)
-    .await
-    .expect("Failed to update password");
-}
-
-pub async fn is_account_exist(con: &PgPool, email: &str) -> Option<Uuid> {
-    sqlx::query_scalar!("select id from users where email=$1", email)
+// Check if email exists (returns user_id)
+pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", email)
         .fetch_optional(con)
         .await
-        .expect("Failed to execute query")
 }
-pub async fn get_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
+pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar!("select email from users where id=$1", id)
         .fetch_optional(con)
         .await
@@ -92,21 +72,22 @@ pub async fn update_account_email(
     con: &PgPool,
     id: Uuid,
     email: &str,
-) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+) -> Result<PgQueryResult, sqlx::Error> {
     sqlx::query!("UPDATE users SET email=$2 where id=$1", id, email)
         .execute(con)
         .await
 }
-
-pub async fn fetch_user_credentials(
+/// Update password
+pub async fn update_account_password(
     con: &PgPool,
-    email: &str,
-) -> Result<Option<LoginCredentials>, sqlx::Error> {
-    sqlx::query_as!(
-        LoginCredentials,
-        "SELECT id,password_hash from users where email=$1",
-        email
+    user_id: Uuid,
+    password_hash: &str,
+) -> Result<PgQueryResult, sqlx::Error> {
+    sqlx::query!(
+        "UPDATE users SET password_hash = $2 WHERE id = $1",
+        user_id,
+        password_hash
     )
-    .fetch_optional(con)
+    .execute(con)
     .await
 }
