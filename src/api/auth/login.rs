@@ -2,7 +2,7 @@ use axum::{Json, debug_handler, extract::State, http::StatusCode};
 use secrecy::SecretBox;
 
 use crate::{
-    AppState, Credentials, LoginResponse, UserProfile, create_access_token,
+    AppState, Credentials, LoginResponse, UserProfile, UserTokenPayload, create_access_token,
     create_verification_key, encode_token, fetch_account_info, generate_token_bytes, hash_token,
     store_token_redis, verify_password,
 };
@@ -32,11 +32,12 @@ pub(super) async fn login(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let key = create_verification_key(crate::TokenType::Refresh, &token_hash);
+    let refresh_payload = UserTokenPayload::new(user.id, &user.username);
     //-------------------------- generate access token---------------
 
-    let access_token =
-        create_access_token(&user, 60 * 15, secret_key).expect("Failed to create access token");
-    store_token_redis(&mut redis_con, &key, &user.id, 30 * 24 * 60 * 60) // storing refresh token in redis to prevent a failure from not returning it to user
+    let access_token = create_access_token(&refresh_payload, 60 * 15, secret_key)
+        .expect("Failed to create access token");
+    store_token_redis(&mut redis_con, &key, &refresh_payload, 30 * 24 * 60 * 60) // storing refresh token in redis to prevent a failure from not returning it to user
         .await
         .unwrap();
     let user_profile = UserProfile::from(user);
