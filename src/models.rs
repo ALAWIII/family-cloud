@@ -1,8 +1,8 @@
 use std::{fmt::Display, str::FromStr};
 
 use chrono::{NaiveDateTime, Utc};
-use secrecy::SecretBox;
-use serde::{Deserialize, Serialize};
+use secrecy::{ExposeSecret, SecretBox};
+use serde::{Deserialize, Serialize, Serializer};
 use sqlx::prelude::FromRow;
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ pub struct User {
     pub storage_quota_bytes: i64,
     pub storage_used_bytes: i64,
 }
+
 impl User {
     pub fn new(username: String, email: String, password_hash: String) -> Self {
         Self {
@@ -36,6 +37,35 @@ impl User {
         self.storage_used_bytes = sub;
     }
 }
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub user: UserProfile,
+}
+
+#[derive(Serialize, Debug)]
+pub struct UserProfile {
+    pub id: Uuid,
+    pub username: String,
+    pub email: String,
+    pub created_at: NaiveDateTime,
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
+}
+impl From<User> for UserProfile {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            created_at: user.created_at,
+            storage_quota_bytes: user.storage_quota_bytes,
+            storage_used_bytes: user.storage_used_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EmailInput {
     pub email: String,
@@ -99,9 +129,16 @@ pub struct LoginCredentials {
     pub id: Uuid,
     pub password_hash: String,
 }
-#[derive(Debug, Deserialize)]
-pub struct TokenQuery {
-    pub token: String,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TokenPayload {
+    #[serde(serialize_with = "serialize_token")]
+    pub token: SecretBox<String>,
+}
+fn serialize_token<S>(token: &SecretBox<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(token.expose_secret())
 }
 #[derive(Debug, Clone, Copy)]
 pub enum TokenType {
@@ -148,6 +185,19 @@ impl Claims {
     pub fn with_expiry(mut self, seconds: i64) -> Self {
         self.exp = self.iat + seconds;
         self
+    }
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UserTokenPayload {
+    pub id: Uuid,
+    pub username: String,
+}
+impl UserTokenPayload {
+    pub fn new(id: Uuid, username: &str) -> Self {
+        Self {
+            id,
+            username: username.into(),
+        }
     }
 }
 pub fn create_verification_key(token_type: TokenType, hashed_token: &str) -> String {
