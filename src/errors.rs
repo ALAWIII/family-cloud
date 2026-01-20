@@ -111,3 +111,47 @@ pub enum CryptoError {
     #[error("HMAC secret missing")]
     HmacSecretMissing(#[from] std::env::VarError),
 }
+//-----------------------------------------------------------
+
+#[derive(TError, Debug)]
+pub enum ApiError {
+    #[error(transparent)]
+    Database(#[from] DatabaseError),
+    #[error(transparent)]
+    Redis(#[from] CRedisError),
+    #[error(transparent)]
+    Email(#[from] EmailError),
+    #[error(transparent)]
+    Crypto(#[from] CryptoError),
+
+    #[error("Account already exists")]
+    AccountExists,
+    #[error("Invalid token")]
+    InvalidToken,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            ApiError::Database(e) => {
+                // tracing::error!("Database error: {}", e);  // Log details
+                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
+            }
+            ApiError::Redis(e) => {
+                // tracing::error!("Redis error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
+            }
+            ApiError::Email(e) => {
+                //  tracing::error!("Email error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to send email")
+            }
+            ApiError::Crypto(e) => {
+                // tracing::error!("Crypto error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
+            }
+            ApiError::AccountExists => (StatusCode::CONFLICT, "Email already registered"),
+            ApiError::InvalidToken => (StatusCode::BAD_REQUEST, "Invalid or expired token"),
+        };
+        (status, Json(json!({ "error": message }))).into_response()
+    }
+}
