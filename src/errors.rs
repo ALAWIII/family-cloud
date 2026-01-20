@@ -1,3 +1,13 @@
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use deadpool_redis::{BuildError, ConfigError};
+use hmac::digest::InvalidLength;
+use lettre::address::AddressError;
+use rand::rand_core::OsError;
+use serde_json::json;
 use thiserror::Error as TError;
 #[derive(TError, Debug)]
 pub enum CloudError {}
@@ -10,67 +20,72 @@ pub enum EmailError {
     #[error("Failed to build email message")]
     MessageBuilder(#[from] lettre::error::Error),
 
-    #[error("Environment variable missing: {0}")]
-    EnvVar(#[from] std::env::VarError),
-
-    #[error("Invalid port number")]
-    InvalidPort(#[from] std::num::ParseIntError),
-
     #[error("Invalid email address: {0}")]
-    InvalidAddress(String),
+    InvalidAddress(#[from] AddressError),
 
-    #[error("Email configuration error: {0}")]
-    Config(String),
-
-    #[error("Failed to send email")]
-    SendFailed,
-
+    #[error("Mail client already initialized")]
+    ClientAlreadyInitialized,
     #[error("Mail client not initialized")]
     ClientNotInitialized,
+    //------------------ will be used later in config files instead of env variables
+    #[error("Invalid port number")]
+    InvalidPort(#[from] std::num::ParseIntError),
+    #[error("Environment variable missing: {0}")]
+    EnvVar(#[from] std::env::VarError),
+    #[error("Email configuration error: {0}")]
+    Config(String),
 }
-
+//--------------------------------------
 #[derive(TError, Debug)]
-pub enum RedisError {
-    #[error("Redis connection failed")]
+pub enum CRedisError {
+    #[error("Redis connection failed: {0}")]
     Connection(#[from] deadpool_redis::redis::RedisError),
 
-    #[error("Pool error: {0}")]
+    #[error("Redis Pool error: {0}")]
     Pool(#[from] deadpool_redis::PoolError),
 
-    #[error("Configuration error: {0}")]
-    Config(String),
-
-    #[error("Serialization failed")]
+    #[error("Redis Serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("Pool not initialized")]
+    #[error("Redis Pool not initialized")]
     PoolNotInitialized,
 
+    #[error("Redis Pool already initialized")]
+    PoolAlreadyInitialized,
+
+    #[error("Redis Pool Building error")]
+    Build(#[from] BuildError),
+    //-------------------------- need refinement
+    #[error("Redis configuration error")]
+    Config(#[from] ConfigError),
     #[error("Environment variable missing: {0}")]
     EnvVar(#[from] std::env::VarError),
 }
-
+//----------------------------------
 #[derive(TError, Debug)]
 pub enum DatabaseError {
     #[error("Database connection failed")]
     Connection(#[from] sqlx::Error),
 
-    #[error("Environment variable missing: {0}")]
-    EnvVar(#[from] std::env::VarError),
-
-    #[error("Pool not initialized")]
+    #[error("Database Pool not initialized")]
     PoolNotInitialized,
+
+    #[error("Database Pool already initialized")]
+    PoolAlreadyInitialized,
 
     #[error("User not found")]
     UserNotFound,
 
     #[error("Duplicate email")]
     DuplicateEmail,
-
+    //------------------- need refinement
     #[error("Query failed: {0}")]
     QueryFailed(String),
-}
 
+    #[error("Environment variable missing: {0}")]
+    EnvVar(#[from] std::env::VarError),
+}
+//----------------------------------------------
 #[derive(TError, Debug)]
 pub enum CryptoError {
     #[error("Password hashing failed")]
@@ -83,14 +98,16 @@ pub enum CryptoError {
     TokenDecode(#[from] base64::DecodeError),
 
     #[error("Random number generation failed")]
-    RngFailed,
+    RngFailed(#[from] OsError),
+    #[error("HMAC can take secret of any length (panic only on zero-length)")]
+    Hmac(#[from] InvalidLength),
 
-    #[error("HMAC secret missing")]
-    HmacSecretMissing(#[from] std::env::VarError),
-
+    //----------------------------- need refinement
     #[error("Invalid token format")]
     InvalidToken,
 
     #[error("Password verification failed")]
     VerificationFailed,
+    #[error("HMAC secret missing")]
+    HmacSecretMissing(#[from] std::env::VarError),
 }
