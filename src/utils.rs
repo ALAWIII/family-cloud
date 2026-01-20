@@ -9,9 +9,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use hmac::{Hmac, Mac};
 use rand::{TryRngCore, rngs::OsRng as RandOsRng};
+use serde::Serialize;
 use sha2::Sha256;
 
-use crate::{Claims, CryptoError, UserTokenPayload};
+use crate::{ApiError, Claims, CryptoError, UserTokenPayload};
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
@@ -92,3 +93,10 @@ pub fn verify_password(
 }
 
 //-----------------------
+
+pub fn serialize_content(content: &impl Serialize) -> Result<String, ApiError> {
+    Ok(serde_json::to_string(content)?)
+}
+pub fn deserialize_content(content: &str) -> Result<String, ApiError> {
+    Ok(serde_json::from_str(content)?)
+}
