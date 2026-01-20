@@ -111,6 +111,10 @@ pub enum CryptoError {
     #[error("HMAC secret missing")]
     HmacSecretMissing(#[from] std::env::VarError),
 }
+//--------------------------
+#[derive(Debug, TError)]
+#[error(transparent)]
+pub struct CSerializeError(#[from] serde_json::Error);
 //-----------------------------------------------------------
 
 #[derive(TError, Debug)]
