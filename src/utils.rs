@@ -18,6 +18,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// accepts number of bytes , len=32 , bits = len*8 = 256-bit token
 pub fn generate_token_bytes(len: usize) -> Result<Vec<u8>, CryptoError> {
     let mut buf = vec![0u8; len];
+    // CryptoError::RngFailed
     RandOsRng.try_fill_bytes(&mut buf)?; // trait method
     Ok(buf)
 }
@@ -29,6 +30,7 @@ pub fn encode_token(token: &[u8]) -> String {
 
 /// Decode token from URL-safe base64 (incoming from client) to array of bytes.
 pub fn decode_token(encoded: &str) -> Result<Vec<u8>, CryptoError> {
+    //CryptoError::TokenDecode
     Ok(URL_SAFE_NO_PAD.decode(encoded)?)
 }
 
@@ -48,13 +50,14 @@ pub fn hash_token(token: &[u8]) -> Result<String, CryptoError> {
 }
 //------------------------------- generating access token--------------------------
 
+/// creating JWT access token
 pub fn create_access_token(
     user: &UserTokenPayload,
     seconds: i64,
     secret_key: SecretBox<String>,
 ) -> Result<String, CryptoError> {
     let claims = Claims::new(user.id, user.username.to_string()).with_expiry(seconds);
-
+    //CryptoError::JwtEncode
     Ok(encode(
         &Header::default(),
         &claims,
@@ -87,3 +90,5 @@ pub fn verify_password(
         Err(e) => Err(CryptoError::PasswordHash(e)),              // Error
     }
 }
+
+//-----------------------
