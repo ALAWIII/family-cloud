@@ -1,61 +1,59 @@
 use std::sync::OnceLock;
 
-use deadpool_redis::{
-    Config, Connection, Pool, Runtime,
-    redis::{self, AsyncTypedCommands, RedisError},
-};
+use deadpool_redis::{Config, Connection, Pool as RPool, Runtime, redis::AsyncTypedCommands};
 use serde::Serialize;
 
-static REDIS_POOL: OnceLock<Pool> = OnceLock::new();
+use crate::CRedisError;
 
-pub async fn init_redis_pool() {
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+static REDIS_POOL: OnceLock<RPool> = OnceLock::new();
+
+pub async fn init_redis_pool() -> Result<(), CRedisError> {
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set"); // wants retargeting in config module
     let cfg = Config::from_url(redis_url);
     let pool = cfg
-        .builder()
-        .expect("Failed to configure redis config")
+        .builder()?
         .max_size(50)
         .create_timeout(Some(std::time::Duration::from_secs(5)))
         .runtime(Runtime::Tokio1)
-        .build()
-        .expect("Falied to build redis configs");
+        .build()?;
+
     REDIS_POOL
         .set(pool)
-        .expect("Falied to set redis connection pool");
+        .map_err(|_| CRedisError::PoolAlreadyInitialized)
 }
-
-pub fn get_redis_pool() -> Pool {
+pub fn get_redis_pool() -> Result<RPool, CRedisError> {
     REDIS_POOL
         .get()
-        .expect("Failed to get redis connection pool")
-        .clone()
+        .ok_or(CRedisError::PoolNotInitialized)
+        .cloned()
 }
 
 /// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
 pub async fn store_token_redis<T: Serialize>(
-    mut conn: Connection,
-    key_token: String,
+    conn: &mut Connection,
+    key_token: &str,
     content: &T,
     ttl: u64,
-) -> Result<(), RedisError> {
-    let content = serde_json::to_string(content).expect("Faield to convert to json string");
-    conn.set_ex(key_token, content, ttl).await
+) -> Result<(), CRedisError> {
+    let content = serde_json::to_string(content)?; // Can fail serialization
+    conn.set_ex(key_token, content, ttl).await?; // Can fail Redis op , converted to CRedisError::Connection
+    Ok(())
 }
 
-pub async fn is_token_exist(hashed_token: &str, mut con: Connection) -> bool {
-    con.exists(hashed_token)
-        .await
-        .expect("Failed to execute command")
+pub async fn is_token_exist(con: &mut Connection, hashed_token: &str) -> Result<bool, CRedisError> {
+    Ok(con.exists(hashed_token).await?)
 }
-pub async fn get_verification_data(hashed_token: &str, mut con: Connection) -> Option<String> {
-    con.get(hashed_token)
-        .await
-        .expect("Failed to execute command")
+
+pub async fn get_verification_data(
+    con: &mut Connection,
+    hashed_token: &str,
+) -> Result<Option<String>, CRedisError> {
+    Ok(con.get(hashed_token).await?)
 }
 pub async fn delete_token_from_redis(
-    mut con: Connection,
+    con: &mut Connection,
     hashed_token: &str,
-) -> Result<(), RedisError> {
+) -> Result<(), CRedisError> {
     con.del(hashed_token).await?;
     Ok(())
 }

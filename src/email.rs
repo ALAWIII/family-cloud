@@ -8,6 +8,8 @@ use std::{
     sync::OnceLock,
 };
 
+use crate::EmailError;
+
 static MAIL_CLIENT: OnceLock<AsyncSmtpTransport<Tokio1Executor>> = OnceLock::new();
 #[derive(Deserialize)]
 struct EmailConfig {
@@ -61,17 +63,28 @@ impl EmailSender {
         self
     }
 
-    pub async fn send_email(self, client: AsyncSmtpTransport<Tokio1Executor>) {
+    pub async fn send_email(
+        self,
+        client: AsyncSmtpTransport<Tokio1Executor>,
+    ) -> Result<(), EmailError> {
         let msg = Message::builder()
             .message_id(self.msg_id)
-            .from(self.from_sender.parse().unwrap())
-            .to(self.email_recipient.parse().unwrap())
+            .from(
+                self.from_sender
+                    .parse()
+                    .map_err(EmailError::InvalidAddress)?,
+            )
+            .to(self
+                .email_recipient
+                .parse()
+                .map_err(EmailError::InvalidAddress)?)
             .subject(self.subject)
             .header(ContentType::TEXT_HTML)
             .body(self.email_body.to_string())
-            .unwrap();
+            .map_err(EmailError::MessageBuilder)?;
 
-        client.send(msg).await.expect("Failed to send message");
+        client.send(msg).await.map_err(EmailError::Transport)?;
+        Ok(())
     }
 }
 
@@ -83,9 +96,8 @@ fn smtp_cfg<'a>(smtp_port: u16) -> (&'a str, &'a str) {
         _ => ("smtp", "?tls=required"),
     }
 }
-
-fn init_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::transport::smtp::Error>
-{
+/// used to establish connection to the Email server and register the app as a viable client that will use the SMTP server to send emails.
+pub fn init_mail_client() -> Result<(), EmailError> {
     let email_cfg =
         EmailConfig::from_env().expect("Failed to get env variables and setup email config");
     let paswd_encoded = urlencoding::encode(email_cfg.smtp_password.expose_secret());
@@ -99,32 +111,19 @@ fn init_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, lettre::tran
         email_cfg.smtp_port,
         tls_param
     );
-
-    Ok(AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_url)?.build())
-}
-
-pub fn get_mail_client() -> AsyncSmtpTransport<Tokio1Executor> {
+    let mail = AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_url)
+        .map_err(EmailError::Transport)?
+        .build();
     MAIL_CLIENT
-        .get_or_init(|| init_mail_client().unwrap())
-        .clone()
+        .set(mail)
+        .map_err(|_| EmailError::ClientAlreadyInitialized)
 }
 
-pub async fn send_email(
-    from_sender: String,
-    email_body: String,
-    subject: &str,
-    email_recipient: &str,
-    client: AsyncSmtpTransport<Tokio1Executor>,
-    msg_id: Option<String>,
-) {
-    let msg = Message::builder()
-        .message_id(msg_id)
-        .from(from_sender.parse().unwrap())
-        .to(email_recipient.parse().unwrap())
-        .subject(subject)
-        .body(email_body.to_string())
-        .unwrap();
-    client.send(msg).await.expect("Failed to send message");
+pub fn get_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+    Ok(MAIL_CLIENT
+        .get()
+        .ok_or(EmailError::ClientNotInitialized)?
+        .clone())
 }
 
 pub fn verification_body(username: &str, url_token: &str, minutes: u32, app: &str) -> String {
