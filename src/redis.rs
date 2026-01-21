@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 
 use deadpool_redis::{Config, Connection, Pool as RPool, Runtime, redis::AsyncTypedCommands};
-use serde::Serialize;
 
 use crate::CRedisError;
 
@@ -27,16 +26,18 @@ pub fn get_redis_pool() -> Result<RPool, CRedisError> {
         .ok_or(CRedisError::PoolNotInitialized)
         .cloned()
 }
+pub async fn get_redis_con(pool: RPool) -> Result<Connection, CRedisError> {
+    Ok(pool.get().await?)
+}
 
 /// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
-pub async fn store_token_redis<T: Serialize>(
+pub async fn store_token_redis(
     conn: &mut Connection,
     key_token: &str,
-    content: &T,
+    serialized_content: &str,
     ttl: u64,
 ) -> Result<(), CRedisError> {
-    let content = serde_json::to_string(content)?; // Can fail serialization
-    conn.set_ex(key_token, content, ttl).await?; // Can fail Redis op , converted to CRedisError::Connection
+    conn.set_ex(key_token, serialized_content, ttl).await?; // Can fail Redis op , converted to CRedisError::Connection
     Ok(())
 }
 
