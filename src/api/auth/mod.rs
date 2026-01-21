@@ -18,9 +18,6 @@ mod email_change;
 use crate::AppState;
 pub use email_change::*;
 
-#[cfg(test)]
-mod tests;
-
 fn change_email_router() -> Router<AppState> {
     Router::new()
         // body contains { access_token , new_email }

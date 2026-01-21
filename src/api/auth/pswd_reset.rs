@@ -107,7 +107,7 @@ pub async fn confirm_password_reset(
     let user_ver = deserialize_content::<UserVerification>(&udata)?;
 
     let password_hash = hash_password(&SecretBox::new(Box::new(form.new_password)))?;
-    update_account_password(&appstate.db_pool, user_ver.id, &password_hash).await;
+    update_account_password(&appstate.db_pool, user_ver.id, &password_hash).await?;
     delete_token_from_redis(&mut redis_con, &key).await?;
 
     Ok(StatusCode::OK)
