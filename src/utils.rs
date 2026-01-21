@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 use hmac::{Hmac, Mac};
 use rand::{TryRngCore, rngs::OsRng as RandOsRng};
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
 use crate::{ApiError, Claims, CryptoError, UserTokenPayload};
@@ -39,6 +39,7 @@ pub fn decode_token(encoded: &str) -> Result<Vec<u8>, CryptoError> {
 ///
 /// the hashed token used to be stored in redis database for account verfication and authentication purposes
 pub fn hmac_token_hex(token: &[u8], secret: &[u8]) -> Result<String, CryptoError> {
+    //Hmac Invalid length
     let mut mac = HmacSha256::new_from_slice(secret)?;
     mac.update(token);
     let tag = mac.finalize().into_bytes();
@@ -97,6 +98,6 @@ pub fn verify_password(
 pub fn serialize_content(content: &impl Serialize) -> Result<String, ApiError> {
     Ok(serde_json::to_string(content)?)
 }
-pub fn deserialize_content(content: &str) -> Result<String, ApiError> {
+pub fn deserialize_content<T: DeserializeOwned>(content: &str) -> Result<T, ApiError> {
     Ok(serde_json::from_str(content)?)
 }
