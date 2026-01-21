@@ -1,6 +1,6 @@
 use secrecy::SecretBox;
 
-use crate::{
+use family_cloud::{
     decode_token, encode_token, generate_token_bytes, hash_password, hmac_token_hex,
     verify_password,
 };
