@@ -13,7 +13,11 @@ async fn login(
     let _ = email.is_some_and(|e| user.email(e));
     let _ = pswd.is_some_and(|p| user.pswd(p));
 
-    Ok((app.login_request(&user).await, user))
+    Ok((
+        app.login_request(Some(&user.email), Some(&user.password))
+            .await,
+        user,
+    ))
 }
 
 #[tokio::test]
@@ -44,5 +48,27 @@ async fn login_invalid_email() -> anyhow::Result<()> {
         .0 // wrong email = Not Found
         .assert_status_not_found();
 
+    Ok(())
+}
+//--------------------- deserializing problems
+#[tokio::test]
+async fn login_missing_fields() -> anyhow::Result<()> {
+    let app = create_app().await;
+    let db_pool = get_db()?;
+    let account = create_verified_account(&db_pool).await;
+    app.login_request(Some(&account.email), None)
+        .await
+        .assert_status_unprocessable_entity();
+    app.login_request(None, Some(&account.password))
+        .await
+        .assert_status_unprocessable_entity();
+    app.login_request(None, None)
+        .await
+        .assert_status_unprocessable_entity();
+    app.login_request(Some(&account.email), Some(&account.password))
+        .await
+        .assert_status_ok();
+
+    // Test with unverified email
     Ok(())
 }

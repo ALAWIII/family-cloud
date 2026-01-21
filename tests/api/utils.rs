@@ -4,10 +4,11 @@ use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
 use family_cloud::{
     TokenType, build_router, create_verification_key, decode_token, get_db, get_redis_pool,
-    hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
+    hash_password, hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
 };
 use reqwest::Response;
 use scraper::{Html, Selector};
+use secrecy::SecretBox;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -23,32 +24,39 @@ pub struct TestAccount {
     pub username: String,
     pub email: String,
     pub password: String,
+    pub password_hash: String,
 }
 impl TestAccount {
-    pub fn new(id: Uuid, username: &str, email: &str, password: &str) -> Self {
+    pub fn new(id: Uuid, username: &str, email: &str, password: &str, password_hash: &str) -> Self {
         Self {
             id,
             username: username.into(),
             email: email.into(),
             password: password.into(),
+            password_hash: password_hash.to_string(),
         }
+    }
+    pub fn email(&mut self, email: &str) -> bool {
+        self.email = email.into();
+        true
+    }
+    pub fn pswd(&mut self, password: &str) -> bool {
+        self.password = password.into();
+        true
     }
 }
 impl Default for TestAccount {
     fn default() -> Self {
         let x = Uuid::new_v4();
+        let h_pas = hash_password(&SecretBox::new(Box::new(x.to_string()))).unwrap();
         Self {
             id: x,
             username: x.to_string(),
             email: format!("{}@potato.com", x),
             password: x.to_string(),
+            password_hash: h_pas,
         }
     }
-}
-
-pub struct SignupTestSession {
-    pub app: AppTest,
-    pub user: TestAccount,
 }
 
 impl AppTest {
@@ -95,6 +103,18 @@ impl AppTest {
             .add_header("Content-Type", "application/json")
             .await
     }
+    pub async fn login_request(&self, email: Option<&str>, password: Option<&str>) -> TestResponse {
+        let mut body = json!({});
+
+        if let Some(e) = email {
+            body["email"] = json!(e);
+        }
+        if let Some(p) = password {
+            body["password"] = json!(p);
+        }
+        self.server.post("/api/auth/login").json(&body).await
+    }
+
     pub async fn get_all_messages_mailhog(&self) -> Vec<Value> {
         let response = self
             .mailhog_client
@@ -205,7 +225,7 @@ pub async fn create_verified_account(con: &PgPool) -> TestAccount {
         user.id,
         user.username,
         user.email,
-        user.password
+        user.password_hash
     )
     .execute(con)
     .await
