@@ -1,11 +1,12 @@
+use anyhow::Ok;
 use family_cloud::{get_mail_client, verification_body};
 use lettre::{AsyncTransport, Message};
 use serde_json::Value;
 use uuid::Uuid;
 
-async fn test_send_email() {
+async fn test_send_email() -> anyhow::Result<()> {
     dotenv::dotenv().unwrap();
-    let mail = get_mail_client();
+    let mail = get_mail_client()?;
     let msg_id = Uuid::new_v4();
     let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
 
@@ -37,5 +38,6 @@ async fn test_send_email() {
         messages
             .iter()
             .any(|v| v["Content"]["Headers"]["Message-ID"][0] == msg_id.to_string())
-    )
+    );
+    Ok(())
 }

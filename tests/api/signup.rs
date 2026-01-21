@@ -7,11 +7,11 @@ use crate::{
 };
 
 #[tokio::test]
-async fn signup_new_account() {
+async fn signup_new_account() -> anyhow::Result<()> {
     let app = create_app().await;
     let user = TestAccount::default();
     let token_type = TokenType::Signup;
-    let mut redis_conn = get_redis_pool().get().await.unwrap();
+    let mut redis_conn = get_redis_pool()?.get().await.unwrap();
     let verify_url = "/api/auth/signup";
     // === Phase 1: New Account Signup ===
     let response = app.signup_request_new_account(&user).await; //
@@ -49,9 +49,9 @@ async fn signup_new_account() {
             .await
             .assert_status_ok();
     }
-
+    let db_pool = get_db()?;
     // Verify account now exists in database
-    let user_id = search_database_for_email(&get_db(), &user.email).await;
+    let user_id = search_database_for_email(&db_pool, &user.email).await;
     assert!(
         user_id.is_some(),
         "Account should be created after verification"
@@ -88,4 +88,5 @@ async fn signup_new_account() {
 
     // === Cleanup ===
     clean_mailhog(&msg_id_token_pairs, &app).await;
+    Ok(())
 }

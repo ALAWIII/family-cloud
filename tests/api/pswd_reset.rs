@@ -1,3 +1,4 @@
+use anyhow::Ok;
 use family_cloud::{create_verification_key, get_db, get_redis_pool};
 use reqwest::StatusCode;
 
@@ -7,9 +8,10 @@ use crate::{
 };
 
 #[tokio::test]
-async fn password_reset_endpoint() {
+async fn password_reset_endpoint() -> anyhow::Result<()> {
     let app = create_app().await;
-    let user = create_verified_account(&get_db()).await;
+    let db_pool = get_db()?;
+    let user = create_verified_account(&db_pool).await;
     let response = app.password_reset_request(&user.email).await;
     //dbg!(&response);
     assert!(response.status_code().is_success());
@@ -18,7 +20,7 @@ async fn password_reset_endpoint() {
     let token_type = family_cloud::TokenType::PasswordReset;
     let messages = app.get_all_messages_mailhog().await;
 
-    let mut redis_conn = get_redis_pool().get().await.unwrap();
+    let mut redis_conn = get_redis_pool()?.get().await.unwrap();
     let msg_id_and_raw_token = get_mailhog_msg_id_and_extract_raw_token_list(&messages, "Password");
     let hashed_tokens: Vec<String> = convert_raw_tokens_to_hashed(
         msg_id_and_raw_token
@@ -79,4 +81,5 @@ async fn password_reset_endpoint() {
     }
     // === Phase 6: cleaning and deleting all password reset messages from mailhog inbox ===
     clean_mailhog(&msg_id_and_raw_token, &app).await;
+    Ok(())
 }

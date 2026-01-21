@@ -126,7 +126,7 @@ pub async fn establish_db_connection() {
 
 pub async fn create_app() -> AppTest {
     establish_db_connection().await;
-    AppTest::new(build_router())
+    AppTest::new(build_router().unwrap())
 }
 
 /// Fetches MailHog message ID and extracts token from email body
@@ -155,7 +155,7 @@ pub fn get_mailhog_msg_id_and_extract_raw_token_list(
 pub fn convert_raw_tokens_to_hashed(raw_tokens: Vec<&String>) -> Vec<String> {
     raw_tokens
         .iter()
-        .map(|t| hash_token(&decode_token(t).unwrap()))
+        .map(|t| hash_token(&decode_token(t).unwrap()).unwrap())
         .collect()
 }
 
