@@ -6,12 +6,12 @@ use login::*;
 use logout::*;
 use refresh::*;
 use signup::*;
-mod utils;
+
 use axum::{
     Router,
     routing::{get, post},
 };
-pub use utils::*;
+
 mod pswd_reset;
 pub use pswd_reset::*;
 mod email_change;
