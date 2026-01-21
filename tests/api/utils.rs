@@ -1,10 +1,11 @@
 use axum::Router;
+use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestResponse, TestServer};
 use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
 use family_cloud::{
-    TokenType, build_router, create_verification_key, decode_token, get_db, get_redis_pool,
-    hash_password, hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
+    build_router, decode_token, get_db, hash_password, hash_token, init_db, init_mail_client,
+    init_redis_pool, init_rustfs,
 };
 use reqwest::Response;
 use scraper::{Html, Selector};
@@ -231,4 +232,21 @@ pub async fn create_verified_account(con: &PgPool) -> TestAccount {
     .await
     .unwrap();
     user
+}
+
+pub async fn login(
+    email: Option<&str>,
+    pswd: Option<&str>,
+) -> anyhow::Result<(TestResponse, TestAccount)> {
+    let app = create_app().await;
+    let db_pool = get_db()?;
+    let mut user = create_verified_account(&db_pool).await;
+    let _ = email.is_some_and(|e| user.email(e));
+    let _ = pswd.is_some_and(|p| user.pswd(p));
+
+    Ok((
+        app.login_request(Some(&user.email), Some(&user.password))
+            .await,
+        user,
+    ))
 }
