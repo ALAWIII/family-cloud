@@ -43,7 +43,7 @@ pub async fn insert_new_account(user: User, db_pool: &PgPool) -> Result<(), Data
         e.as_database_error()
             .filter(|db_err|
                 db_err.constraint()==Some("users_email_key"))
-            .map(|_|DatabaseError::DuplicateEmail)
+            .map(|_|DatabaseError::Duplicate)
             .unwrap_or(DatabaseError::Connection(e))
             })?;
     Ok(())
@@ -59,7 +59,7 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     )
     .fetch_optional(con)
     .await? // connection error propogation
-    .ok_or(DatabaseError::UserNotFound) // if user not found !!
+    .ok_or(DatabaseError::NotFound) // if user not found !!
 }
 
 // Check if email exists (returns user_id)
@@ -89,7 +89,7 @@ pub async fn update_account_email(
         .map_err(|e| {
             e.as_database_error()
                 .filter(|db_err| db_err.constraint() == Some("users_email_key"))
-                .map(|_| DatabaseError::DuplicateEmail)
+                .map(|_| DatabaseError::Duplicate)
                 .unwrap_or(DatabaseError::Connection(e))
         })
 }
