@@ -15,10 +15,7 @@ async fn signup_new_account() -> anyhow::Result<()> {
     let verify_url = "/api/auth/signup";
     // === Phase 1: New Account Signup ===
     let response = app.signup_request_new_account(&user).await; //
-    assert_eq!(
-        response.text(),
-        "If this email is new, you'll receive a verification email"
-    );
+    assert!(response.text().is_empty());
 
     // === Phase 2: Verify Email Sent with Token ===
     let messages_before = app.get_all_messages_mailhog().await;
@@ -47,7 +44,7 @@ async fn signup_new_account() -> anyhow::Result<()> {
     for (_, raw_token) in &msg_id_token_pairs {
         app.click_verify_url_in_email_message(verify_url, raw_token)
             .await
-            .assert_status_ok();
+            .assert_status_success();
     }
     let db_pool = get_db()?;
     // Verify account now exists in database

@@ -4,7 +4,7 @@ use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
 use family_cloud::{
     TokenType, build_router, create_verification_key, decode_token, get_db, get_redis_pool,
-    hash_token, init_db, init_redis_pool, init_rustfs,
+    hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
 };
 use reqwest::Response;
 use scraper::{Html, Selector};
@@ -122,6 +122,7 @@ pub async fn establish_db_connection() {
     init_redis_pool().await;
     init_db().await;
     init_rustfs().await;
+    init_mail_client();
 }
 
 pub async fn create_app() -> AppTest {
