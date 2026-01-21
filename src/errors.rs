@@ -1,5 +1,4 @@
 use axum::{
-    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -7,155 +6,199 @@ use deadpool_redis::{BuildError, ConfigError};
 use hmac::digest::InvalidLength;
 use lettre::address::AddressError;
 use rand::rand_core::OsError;
-use serde_json::json;
 use thiserror::Error as TError;
 #[derive(TError, Debug)]
 pub enum CloudError {}
 
 #[derive(TError, Debug)]
 pub enum EmailError {
-    #[error("SMTP transport error")]
+    /// SMTP transport-level failure (network, TLS, auth, etc.)
+    #[error("SMTP transport failure")]
     Transport(#[from] lettre::transport::smtp::Error),
 
-    #[error("Failed to build email message")]
+    /// Invalid email message structure
+    #[error("Email message build failed")]
     MessageBuilder(#[from] lettre::error::Error),
 
-    #[error("Invalid email address: {0}")]
+    /// Invalid email address format
+    #[error("Invalid email address")]
     InvalidAddress(#[from] AddressError),
 
+    /// Email client lifecycle errors
     #[error("Mail client already initialized")]
     ClientAlreadyInitialized,
+
     #[error("Mail client not initialized")]
     ClientNotInitialized,
-    //------------------ will be used later in config files instead of env variables
-    #[error("Invalid port number")]
-    InvalidPort(#[from] std::num::ParseIntError),
-    #[error("Environment variable missing: {0}")]
-    EnvVar(#[from] std::env::VarError),
-    #[error("Email configuration error: {0}")]
-    Config(String),
 }
+
 //--------------------------------------
+
 #[derive(TError, Debug)]
 pub enum CRedisError {
-    #[error("Redis connection failed: {0}")]
+    /// Low-level Redis protocol or IO error
+    #[error("Redis connection error")]
     Connection(#[from] deadpool_redis::redis::RedisError),
 
-    #[error("Redis Pool error: {0}")]
+    /// Pool runtime failure
+    #[error("Redis pool error")]
     Pool(#[from] deadpool_redis::PoolError),
 
-    #[error("Redis Serialization failed: {0}")]
-    Serialization(#[from] serde_json::Error),
-
-    #[error("Redis Pool not initialized")]
+    /// Pool lifecycle errors
+    #[error("Redis pool not initialized")]
     PoolNotInitialized,
 
-    #[error("Redis Pool already initialized")]
+    #[error("Redis pool already initialized")]
     PoolAlreadyInitialized,
 
-    #[error("Redis Pool Building error")]
+    /// Pool construction failure
+    #[error("Redis pool build error")]
     Build(#[from] BuildError),
-    //-------------------------- need refinement
+
+    /// Invalid configuration
     #[error("Redis configuration error")]
     Config(#[from] ConfigError),
-    #[error("Environment variable missing: {0}")]
-    EnvVar(#[from] std::env::VarError),
 }
+
 //----------------------------------
+
 #[derive(TError, Debug)]
 pub enum DatabaseError {
-    #[error("Database connection failed")]
+    /// Connection, timeout, protocol errors
+    #[error("Database connection error")]
     Connection(#[from] sqlx::Error),
 
-    #[error("Database Pool not initialized")]
+    /// Pool lifecycle
+    #[error("Database pool not initialized")]
     PoolNotInitialized,
 
-    #[error("Database Pool already initialized")]
+    #[error("Database pool already initialized")]
     PoolAlreadyInitialized,
 
-    #[error("User not found")]
-    UserNotFound,
+    // -------- Domain-level (safe to bubble up) --------
+    /// Used internally; API should normalize response
+    #[error("Entity not found")]
+    NotFound,
 
-    #[error("Duplicate email")]
-    DuplicateEmail,
-    //------------------- need refinement
-    #[error("Query failed: {0}")]
-    QueryFailed(String),
-
-    #[error("Environment variable missing: {0}")]
-    EnvVar(#[from] std::env::VarError),
+    /// Unique constraint violation
+    #[error("Duplicate entry")]
+    Duplicate,
 }
+
 //----------------------------------------------
+
 #[derive(TError, Debug)]
 pub enum CryptoError {
+    /// Hashing or verification failure (internal)
     #[error("Password hashing failed")]
     PasswordHash(#[from] argon2::password_hash::Error),
 
-    #[error("JWT encoding failed")]
-    JwtEncode(#[from] jsonwebtoken::errors::Error),
+    /// JWT encode/decode internal failure
+    #[error("JWT error")]
+    Jwt(#[from] jsonwebtoken::errors::Error),
 
+    /// Token decoding failure
     #[error("Token decoding failed")]
     TokenDecode(#[from] base64::DecodeError),
 
-    #[error("Random number generation failed")]
+    /// Secure RNG failure (system-level)
+    #[error("Random generator failure")]
     RngFailed(#[from] OsError),
-    #[error("HMAC can take secret of any length (panic only on zero-length)")]
+
+    /// HMAC misconfiguration
+    #[error("Invalid HMAC configuration")]
     Hmac(#[from] InvalidLength),
 
-    //----------------------------- need refinement
-    #[error("Invalid token format")]
-    InvalidToken,
+    // -------- Domain auth failures --------
+    /// Invalid credentials / token
+    #[error("Authentication failed")]
+    AuthFailed,
 
-    #[error("Password verification failed")]
-    VerificationFailed,
-    #[error("HMAC secret missing")]
-    HmacSecretMissing(#[from] std::env::VarError),
+    /// Token expired (semantic, not crypto failure)
+    #[error("Token expired")]
+    TokenExpired,
 }
-//--------------------------
-#[derive(Debug, TError)]
-#[error(transparent)]
-pub struct CSerializeError(#[from] serde_json::Error);
+
 //-----------------------------------------------------------
 
 #[derive(TError, Debug)]
 pub enum ApiError {
+    // -------- Infra --------
     #[error(transparent)]
     Database(#[from] DatabaseError),
+
     #[error(transparent)]
     Redis(#[from] CRedisError),
+
     #[error(transparent)]
     Email(#[from] EmailError),
+
     #[error(transparent)]
     Crypto(#[from] CryptoError),
 
-    #[error("Account already exists")]
-    AccountExists,
-    #[error("Invalid token")]
-    InvalidToken,
+    #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+
+    // -------- Domain --------
+    #[error("Conflict")]
+    Conflict,
+
+    #[error("Bad request")]
+    BadRequest,
+
+    #[error("Unauthorized")]
+    Unauthorized,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::Database(e) => {
-                // tracing::error!("Database error: {}", e);  // Log details
-                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
-            }
-            ApiError::Redis(e) => {
-                // tracing::error!("Redis error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
-            }
-            ApiError::Email(e) => {
-                //  tracing::error!("Email error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to send email")
-            }
-            ApiError::Crypto(e) => {
-                // tracing::error!("Crypto error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Service unavailable")
-            }
-            ApiError::AccountExists => (StatusCode::CONFLICT, "Email already registered"),
-            ApiError::InvalidToken => (StatusCode::BAD_REQUEST, "Invalid or expired token"),
+        // optional: centralized logging
+        // tracing::error!(error = ?self);
+
+        let status = match self {
+            // ---------- Database ----------
+            ApiError::Database(db) => match db {
+                DatabaseError::NotFound => StatusCode::NOT_FOUND, // resource missing
+                DatabaseError::Duplicate => StatusCode::CONFLICT, // unique constraint
+                DatabaseError::PoolNotInitialized
+                | DatabaseError::PoolAlreadyInitialized
+                | DatabaseError::Connection(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
+            },
+
+            // ---------- Redis ----------
+            ApiError::Redis(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
+
+            // ---------- Email ----------
+            ApiError::Email(e) => match e {
+                EmailError::InvalidAddress(_) => StatusCode::BAD_REQUEST, // malformed recipient
+                EmailError::ClientNotInitialized | EmailError::ClientAlreadyInitialized => {
+                    StatusCode::INTERNAL_SERVER_ERROR // lifecycle misconfiguration
+                }
+                EmailError::Transport(_) | EmailError::MessageBuilder(_) => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } // transient network / SMTP
+            },
+
+            // ---------- Crypto ----------
+            ApiError::Crypto(c) => match c {
+                CryptoError::AuthFailed
+                | CryptoError::TokenExpired
+                | CryptoError::TokenDecode(_) => StatusCode::UNAUTHORIZED, // semantic auth errors
+                CryptoError::PasswordHash(_)
+                | CryptoError::Jwt(_)
+                | CryptoError::RngFailed(_)
+                | CryptoError::Hmac(_) => StatusCode::INTERNAL_SERVER_ERROR, // internal crypto failure
+            },
+
+            // ---------- Serialization ----------
+            ApiError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+
+            // ---------- Domain helpers ----------
+            ApiError::Conflict => StatusCode::CONFLICT,
+            ApiError::BadRequest => StatusCode::BAD_REQUEST,
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
         };
-        (status, Json(json!({ "error": message }))).into_response()
+
+        status.into_response()
     }
 }
