@@ -37,14 +37,14 @@ impl User {
         self.storage_used_bytes = sub;
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub user: UserProfile,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Deserialize)]
 pub struct UserProfile {
     pub id: Uuid,
     pub username: String,
@@ -123,12 +123,7 @@ pub struct Credentials {
     pub email: String,
     pub password: SecretBox<String>,
 }
-/// used to fetch database , the id will be used as content to refresh token in redis !
-#[derive(Debug, Deserialize)]
-pub struct LoginCredentials {
-    pub id: Uuid,
-    pub password_hash: String,
-}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TokenPayload {
     #[serde(serialize_with = "serialize_token")]
@@ -199,7 +194,4 @@ impl UserTokenPayload {
             username: username.into(),
         }
     }
-}
-pub fn create_verification_key(token_type: TokenType, hashed_token: &str) -> String {
-    format!("{}:{}", token_type, hashed_token)
 }
