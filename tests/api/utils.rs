@@ -115,6 +115,7 @@ impl AppTest {
         }
         self.server.post("/api/auth/login").json(&body).await
     }
+
     /// refresh token sent/recieved in a cookie jar to simulate web client requests
     pub async fn logout_cookie_request(&self, cookie: Cookie<'_>) -> TestResponse {
         self.server
@@ -130,7 +131,18 @@ impl AppTest {
     pub async fn logout_request(&self) -> TestResponse {
         self.server.post("/api/auth/logout").await
     }
-
+    pub async fn refresh_body_request(&self, body: &Value) -> TestResponse {
+        self.server.post("/api/auth/refresh").json(&body).await
+    }
+    pub async fn refresh_cookie_request(&self, cookie: Cookie<'_>) -> TestResponse {
+        self.server
+            .post("/api/auth/refresh")
+            .add_cookie(cookie)
+            .await
+    }
+    pub async fn refresh_non_request(&self) -> TestResponse {
+        self.server.post("/api/auth/refresh").await
+    }
     pub async fn get_all_messages_mailhog(&self) -> Vec<Value> {
         let response = self
             .mailhog_client
