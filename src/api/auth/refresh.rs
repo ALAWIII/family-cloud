@@ -4,22 +4,19 @@ use secrecy::{ExposeSecret, SecretBox};
 
 use crate::{
     ApiError, AppState, TokenPayload, UserTokenPayload, create_access_token,
-    create_verification_key, decode_token, deserialize_content, get_redis_con,
-    get_verification_data, hash_token,
+    create_verification_key, decode_token, deserialize_content, extract_refresh_token,
+    get_redis_con, get_verification_data, hash_token,
 };
 #[debug_handler]
 /// responsible for generating new access tokens as a response
 pub(super) async fn refresh_token(
     State(appstate): State<AppState>,
     cookie_jar: CookieJar,
-    Json(body): Json<Option<TokenPayload>>,
+    body: Option<Json<TokenPayload>>,
 ) -> Result<Json<TokenPayload>, ApiError> {
+    let refresh_token = extract_refresh_token(&cookie_jar, body)?;
+
     let secret = SecretBox::new(Box::new(std::env::var("HMAC_SECRET").unwrap()));
-    let refresh_token = cookie_jar
-        .get("refresh_token")
-        .map(|cookie| SecretBox::new(Box::new(cookie.value().into())))
-        .or_else(|| body.map(|t| t.token))
-        .ok_or(ApiError::Unauthorized)?;
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = decode_token(refresh_token.expose_secret())?; // unauthrized
 
