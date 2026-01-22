@@ -2,6 +2,8 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
+use axum::Json;
+use axum_extra::extract::CookieJar;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use secrecy::{ExposeSecret, SecretBox};
 
@@ -12,7 +14,7 @@ use rand::{TryRngCore, rngs::OsRng as RandOsRng};
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
-use crate::{ApiError, Claims, CryptoError, UserTokenPayload};
+use crate::{ApiError, Claims, CryptoError, TokenPayload, TokenType, UserTokenPayload};
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
@@ -89,7 +91,7 @@ pub fn verify_password(
     match argon.verify_password(password.expose_secret().as_bytes(), &parsed_hash) {
         Ok(()) => Ok(true),                                       // Match
         Err(argon2::password_hash::Error::Password) => Ok(false), // No match
-        Err(e) => Err(CryptoError::PasswordHash(e)),              // Error
+        Err(e) => Err(CryptoError::PasswordHash(e)),              // INTERNAL_Error 500
     }
 }
 
@@ -100,4 +102,19 @@ pub fn serialize_content(content: &impl Serialize) -> Result<String, ApiError> {
 }
 pub fn deserialize_content<T: DeserializeOwned>(content: &str) -> Result<T, ApiError> {
     Ok(serde_json::from_str(content)?)
+}
+//----------------------
+pub fn extract_refresh_token(
+    cookie_jar: &CookieJar,
+    body: Option<Json<TokenPayload>>,
+) -> Result<SecretBox<String>, ApiError> {
+    cookie_jar
+        .get("token")
+        .map(|cookie| SecretBox::new(Box::new(cookie.value().into())))
+        .or_else(|| body.map(|t| t.0.token))
+        .ok_or(ApiError::Unauthorized)
+}
+//------------------------
+pub fn create_verification_key(token_type: TokenType, hashed_token: &str) -> String {
+    format!("{}:{}", token_type, hashed_token)
 }
