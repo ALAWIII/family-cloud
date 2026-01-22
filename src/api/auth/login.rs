@@ -1,4 +1,4 @@
-use axum::{Json, debug_handler, extract::State, http::StatusCode};
+use axum::{Json, debug_handler, extract::State};
 use secrecy::SecretBox;
 
 use crate::{
@@ -16,6 +16,7 @@ pub(super) async fn login(
     let secret_key = SecretBox::new(Box::new(std::env::var("HMAC_SECRET").unwrap()));
     let user = fetch_account_info(&appstate.db_pool, &credentials.email).await?;
     if !verify_password(&credentials.password, &user.password_hash)? {
+        //500 propogates
         return Err(ApiError::Unauthorized);
     }
     //--------------------------generating refresh token--------------
