@@ -37,20 +37,18 @@ pub fn decode_token(encoded: &str) -> Result<Vec<u8>, CryptoError> {
     Ok(URL_SAFE_NO_PAD.decode(encoded)?)
 }
 
+/// accepts a decoded token as bytes and returns a hashed version of it.
 /// accepts a token bytes and a global secret  to create a strong hashed token
 ///
 /// the hashed token used to be stored in redis database for account verfication and authentication purposes
-pub fn hmac_token_hex(token: &[u8], secret: &[u8]) -> Result<String, CryptoError> {
+pub fn hash_token(token: &[u8], secret: &str) -> Result<String, CryptoError> {
     //Hmac Invalid length
-    let mut mac = HmacSha256::new_from_slice(secret)?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
     mac.update(token);
     let tag = mac.finalize().into_bytes();
     Ok(hex::encode(tag)) // encodes data to hex strings with lowercase chars
 }
-/// accepts a decoded token as bytes and returns a hashed version of it.
-pub fn hash_token(token: &[u8], secret: &str) -> Result<String, CryptoError> {
-    hmac_token_hex(token, secret.as_bytes())
-}
+
 //------------------------------- generating access token--------------------------
 
 /// creating JWT access token
