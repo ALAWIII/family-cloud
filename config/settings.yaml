@@ -1,0 +1,27 @@
+app:
+  host: 127.0.0.1
+  port: 5050
+database:
+  name: familycloud
+  host: localhost
+  port: 5432
+  user_name: allawiii
+  password: 0788
+email:
+  protocol: "smtp" # if smtps = no need for tls_required , if smtp and not mailhog tls_required = true
+  tls_param: false
+  port: 1025
+  server: localhost
+  username: anything
+  password: anything
+  from_sender: noreply@yourapp.com
+rustfs:
+  region: us-east-1
+  access_key: family
+  url: http://127.0.0.1:9000
+secrets:
+  rustfs: OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ
+  hmac: OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ
+redis:
+  host: 127.0.0.1
+  port: 6379
