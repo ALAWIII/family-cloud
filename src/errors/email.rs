@@ -1,3 +1,5 @@
+use std::env::VarError;
+
 use lettre::address::AddressError;
 
 use thiserror::Error as TError;
@@ -13,7 +15,8 @@ pub enum EmailError {
     /// Invalid email message structure
     #[error("Email message build failed")]
     MessageBuilder(#[from] lettre::error::Error),
-
+    #[error("Invalid SMTP URL ")]
+    EnvVar(#[from] VarError),
     /// Invalid email address format
     #[error("Invalid email address")]
     InvalidAddress(#[from] AddressError),

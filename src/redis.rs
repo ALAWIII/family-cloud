@@ -2,13 +2,12 @@ use std::sync::OnceLock;
 
 use deadpool_redis::{Config, Connection, Pool as RPool, Runtime, redis::AsyncTypedCommands};
 
-use crate::CRedisError;
+use crate::{CRedisError, RedisConfig};
 
 static REDIS_POOL: OnceLock<RPool> = OnceLock::new();
 
-pub async fn init_redis_pool() -> Result<(), CRedisError> {
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set"); // wants retargeting in config module
-    let cfg = Config::from_url(redis_url);
+pub async fn init_redis_pool(rds_conf: &RedisConfig) -> Result<(), CRedisError> {
+    let cfg = Config::from_url(rds_conf.url());
     let pool = cfg
         .builder()?
         .max_size(50)

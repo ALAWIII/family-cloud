@@ -50,8 +50,8 @@ pub async fn password_reset(
         } // if user not found
     };
 
-    let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
-    let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
+    let from_sender = appstate.settings.email.from_sender;
+    let app_url = appstate.settings.app.url();
 
     let token = generate_token_bytes(32)?;
     let raw_token = encode_token(&token);
@@ -63,7 +63,7 @@ pub async fn password_reset(
     store_token_redis(&mut redis_con, &key, &content, 5 * 60).await?;
 
     //---------------------------------
-    let reset_link = format!("{}/api/auth/password-reset?token={}", base_url, raw_token);
+    let reset_link = format!("{}/api/auth/password-reset?token={}", app_url, raw_token);
     let body = password_reset_body(&user_info.username, &reset_link, 5, "family cloud");
     EmailSender::default()
         .from_sender(from_sender)

@@ -19,18 +19,21 @@ pub async fn change_email(
     State(appstate): State<AppState>,
     Json(email_info): Json<EmailInput>,
 ) -> Result<StatusCode, ApiError> {
-    let user_id = is_account_exist(&appstate.db_pool, &email_info.email).await?;
+    // searching whether this new email provided is already in use with specific account
+    let user_id = is_account_exist(&appstate.db_pool, &email_info.email) // this ID maybe for another user account not this user who tries to change to it!
+        .await?;
+
     if user_id.is_some() {
-        // check if email exist
         return Err(ApiError::Conflict);
     }
+
     let old_email = fetch_email_by_id(&appstate.db_pool, claims.sub) // user_id
         .await?
         .ok_or(DatabaseError::NotFound)?;
 
     //-------------------------
-    let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
-    let app_url = std::env::var("APP_URL").unwrap();
+    let from_sender = appstate.settings.email.from_sender;
+    let app_url = appstate.settings.app.url();
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = generate_token_bytes(32)?;
     let raw_token = encode_token(&token_bytes);
@@ -49,7 +52,7 @@ pub async fn change_email(
     EmailSender::default()
         .from_sender(from_sender.clone())
         .email_recipient(email_info.email)
-        .subject("Email Change Request".into())
+        .subject("Change Email Request".into())
         .email_body(email_change_body(
             &claims.username,
             &verify_change_email_link,
@@ -66,7 +69,7 @@ pub async fn change_email(
     EmailSender::default()
         .from_sender(from_sender)
         .email_recipient(old_email)
-        .subject("Email Change Request".into())
+        .subject("Cancel Changing Email Request".into())
         .email_body(email_cancel_body(
             &claims.username,
             &cancel_change_email_link,
@@ -108,6 +111,7 @@ pub async fn cancel_change_email(
     let hashed_token = hash_token(&token_bytes)?;
     let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
     let t = is_token_exist(&mut redis_con, &key).await?;
+
     if !t {
         return Err(ApiError::BadRequest);
     }

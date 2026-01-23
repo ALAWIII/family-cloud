@@ -1,9 +1,20 @@
-use crate::Claims;
-use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
+use crate::{AppState, Claims};
+use axum::{
+    debug_middleware,
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::Response,
+};
 use jsonwebtoken::{DecodingKey, Validation, decode};
+use secrecy::{ExposeSecret, SecretString};
 
-pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
-    let secret = std::env::var("HMAC_SECRET").unwrap();
+#[debug_middleware]
+pub async fn auth_middleware(
+    State(secret): State<SecretString>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
     let token = req
         .headers()
         .get("authorization")
@@ -13,7 +24,7 @@ pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, S
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let claims = decode::<Claims>(
         token,
-        &DecodingKey::from_secret(secret.as_bytes()),
+        &DecodingKey::from_secret(secret.expose_secret().as_bytes()),
         &Validation::default(),
     )
     .map_err(|_| StatusCode::UNAUTHORIZED)?

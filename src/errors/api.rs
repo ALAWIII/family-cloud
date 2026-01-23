@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use config::ConfigError;
 use thiserror::Error as TError;
 #[derive(TError, Debug)]
 pub enum ApiError {
@@ -21,7 +22,8 @@ pub enum ApiError {
 
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
-
+    #[error(transparent)]
+    Config(#[from] ConfigError),
     // -------- Domain --------
     #[error("Conflict")]
     Conflict,
@@ -54,7 +56,9 @@ impl IntoResponse for ApiError {
             // ---------- Email ----------
             ApiError::Email(e) => match e {
                 EmailError::InvalidAddress(_) => StatusCode::BAD_REQUEST, // malformed recipient
-                EmailError::ClientNotInitialized | EmailError::ClientAlreadyInitialized => {
+                EmailError::ClientNotInitialized
+                | EmailError::ClientAlreadyInitialized
+                | EmailError::EnvVar(_) => {
                     StatusCode::INTERNAL_SERVER_ERROR // lifecycle misconfiguration
                 }
                 EmailError::Transport(_) | EmailError::MessageBuilder(_) => {
@@ -74,7 +78,7 @@ impl IntoResponse for ApiError {
             },
 
             // ---------- Serialization ----------
-            ApiError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Serialization(_) | ApiError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
 
             // ---------- Domain helpers ----------
             ApiError::Conflict => StatusCode::CONFLICT,

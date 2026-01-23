@@ -1,37 +1,13 @@
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
 };
-use secrecy::{ExposeSecret, SecretBox};
-use serde::Deserialize;
-use std::{
-    env::{VarError, var as env_var},
-    sync::OnceLock,
-};
 
-use crate::EmailError;
+use std::sync::OnceLock;
+
+use crate::{EmailConfig, EmailError};
 
 static MAIL_CLIENT: OnceLock<AsyncSmtpTransport<Tokio1Executor>> = OnceLock::new();
-#[derive(Deserialize)]
-struct EmailConfig {
-    smtp_server: String,              // smtp.gmail.com, smtp.office365.com, etc.
-    smtp_port: u16,                   // 587 or 465
-    smtp_username: String,            // admin email from the smtp_server or an api key
-    smtp_password: SecretBox<String>, // SMTP password
-}
-impl EmailConfig {
-    fn from_env() -> Result<Self, VarError> {
-        let smtp_server = env_var("SMTP_SERVER")?;
-        let smtp_port = env_var("SMTP_PORT")?.parse::<u16>().unwrap_or(587);
-        let smtp_username = env_var("SMTP_USERNAME")?;
-        let smtp_password = env_var("SMTP_PASSWORD")?;
-        Ok(Self {
-            smtp_server,
-            smtp_port,
-            smtp_username,
-            smtp_password: SecretBox::new(Box::new(smtp_password)),
-        })
-    }
-}
+
 #[derive(Debug, Default)]
 pub struct EmailSender {
     from_sender: String,
@@ -88,30 +64,9 @@ impl EmailSender {
     }
 }
 
-// needs more care and reconstructions
-fn smtp_cfg<'a>(smtp_port: u16) -> (&'a str, &'a str) {
-    match smtp_port {
-        465 => ("smtps", ""),
-        1025 => ("smtp", ""),
-        _ => ("smtp", "?tls=required"),
-    }
-}
 /// used to establish connection to the Email server and register the app as a viable client that will use the SMTP server to send emails.
-pub fn init_mail_client() -> Result<(), EmailError> {
-    let email_cfg =
-        EmailConfig::from_env().expect("Failed to get env variables and setup email config");
-    let paswd_encoded = urlencoding::encode(email_cfg.smtp_password.expose_secret());
-    let (scheme, tls_param) = smtp_cfg(email_cfg.smtp_port);
-    let email_url = format!(
-        "{}://{}:{}@{}:{}{}",
-        scheme,
-        email_cfg.smtp_username,
-        paswd_encoded,
-        email_cfg.smtp_server,
-        email_cfg.smtp_port,
-        tls_param
-    );
-    let mail = AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_url)
+pub fn init_mail_client(smtp_url: &EmailConfig) -> Result<(), EmailError> {
+    let mail = AsyncSmtpTransport::<Tokio1Executor>::from_url(&smtp_url.url())
         .map_err(EmailError::Transport)?
         .build();
     MAIL_CLIENT

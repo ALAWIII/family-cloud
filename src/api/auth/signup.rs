@@ -26,8 +26,8 @@ pub(super) async fn signup(
         return Ok(StatusCode::OK);
     }
 
-    let from_sender = std::env::var("SMTP_FROM_ADDRESS").unwrap();
-    let base_url = std::env::var("APP_URL").expect("FRONTEND_URL not set");
+    let from_sender = appstate.settings.email.from_sender;
+    let app_url = appstate.settings.app.url();
     // if email is new
     let token = generate_token_bytes(32)?;
     let raw_token = encode_token(&token); // used to send as a url in email message
@@ -35,7 +35,7 @@ pub(super) async fn signup(
     let pending_account = create_account(&signup_info)?;
     let email_body = verification_body(
         &signup_info.username,
-        &format!("{}/api/auth/signup?token={}", base_url, raw_token),
+        &format!("{}/api/auth/signup?token={}", app_url, raw_token),
         5,
         "family_cloud",
     );

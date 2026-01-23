@@ -3,16 +3,14 @@ use std::sync::OnceLock;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
 use uuid::Uuid;
 
-use crate::{DatabaseError, User};
+use crate::{DatabaseConfig, DatabaseError, User};
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
-pub async fn init_db() -> Result<(), DatabaseError> {
-    let url = std::env::var("DATABASE_URL").expect("Failed to obtain the DATABASE_URL");
-
+pub async fn init_db(db: &DatabaseConfig) -> Result<(), DatabaseError> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
-        .connect(&url)
+        .connect(&db.url())
         .await?;
     DB_POOL
         .set(pool)

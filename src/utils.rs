@@ -5,7 +5,7 @@ use argon2::{
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use jsonwebtoken::{EncodingKey, Header, encode};
-use secrecy::{ExposeSecret, SecretBox};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -58,7 +58,7 @@ pub fn hash_token(token: &[u8]) -> Result<String, CryptoError> {
 pub fn create_access_token(
     user: &UserTokenPayload,
     seconds: i64,
-    secret_key: SecretBox<String>,
+    secret_key: SecretString,
 ) -> Result<String, CryptoError> {
     let claims = Claims::new(user.id, user.username.to_string()).with_expiry(seconds);
     //CryptoError::JwtEncode

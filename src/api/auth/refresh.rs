@@ -16,7 +16,7 @@ pub(super) async fn refresh_token(
 ) -> Result<Json<TokenPayload>, ApiError> {
     let refresh_token = extract_refresh_token(&cookie_jar, body)?;
 
-    let secret = SecretBox::new(Box::new(std::env::var("HMAC_SECRET").unwrap()));
+    let secret = appstate.settings.secrets.hmac;
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = decode_token(refresh_token.expose_secret())?; // unauthrized
 

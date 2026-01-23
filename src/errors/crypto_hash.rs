@@ -1,10 +1,5 @@
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
-use deadpool_redis::{BuildError, ConfigError};
 use hmac::digest::InvalidLength;
-use lettre::address::AddressError;
+
 use rand::rand_core::OsError;
 use thiserror::Error as TError;
 

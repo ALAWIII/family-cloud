@@ -1,5 +1,4 @@
 use axum::{Json, debug_handler, extract::State};
-use secrecy::SecretBox;
 
 use crate::{
     ApiError, AppState, Credentials, LoginResponse, UserProfile, UserTokenPayload,
@@ -13,7 +12,7 @@ pub(super) async fn login(
     State(appstate): State<AppState>,
     Json(credentials): Json<Credentials>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let secret_key = SecretBox::new(Box::new(std::env::var("HMAC_SECRET").unwrap()));
+    let hamcs = appstate.settings.secrets.hmac;
     let user = fetch_account_info(&appstate.db_pool, &credentials.email).await?;
     if !verify_password(&credentials.password, &user.password_hash)? {
         //500 propogates
@@ -29,7 +28,7 @@ pub(super) async fn login(
     let ser_refresh_payload = serialize_content(&refresh_payload)?;
     //-------------------------- generate access token---------------
 
-    let access_token = create_access_token(&refresh_payload, 60 * 15, secret_key)?;
+    let access_token = create_access_token(&refresh_payload, 60 * 15, hamcs)?;
     store_token_redis(
         &mut redis_con,
         &key,
