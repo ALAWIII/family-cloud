@@ -15,11 +15,12 @@ pub(super) async fn logout(
     cookie_jar: CookieJar,
     body: Option<Json<TokenPayload>>,
 ) -> Result<StatusCode, ApiError> {
+    let secret = appstate.settings.secrets.hmac.expose_secret();
     let refresh_token = extract_refresh_token(&cookie_jar, body)?;
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
 
     let token_bytes = decode_token(refresh_token.expose_secret())?;
-    let token_hash = hash_token(&token_bytes)?;
+    let token_hash = hash_token(&token_bytes, secret)?;
     let key = create_verification_key(crate::TokenType::Refresh, &token_hash);
     delete_token_from_redis(&mut redis_con, &key).await?; // already deleted
     Ok(StatusCode::NO_CONTENT)

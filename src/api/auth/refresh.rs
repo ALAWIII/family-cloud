@@ -20,7 +20,7 @@ pub(super) async fn refresh_token(
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = decode_token(refresh_token.expose_secret())?; // unauthrized
 
-    let token_hash = hash_token(&token_bytes)?;
+    let token_hash = hash_token(&token_bytes, secret.expose_secret())?;
     let key = create_verification_key(crate::TokenType::Refresh, &token_hash);
     let user_data = get_verification_data(&mut redis_con, &key)
         .await?

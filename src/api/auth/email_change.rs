@@ -32,12 +32,13 @@ pub async fn change_email(
         .ok_or(DatabaseError::NotFound)?;
 
     //-------------------------
+    let secret = appstate.settings.secrets.hmac;
     let from_sender = appstate.settings.email.from_sender;
     let app_url = appstate.settings.app.url();
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = generate_token_bytes(32)?;
     let raw_token = encode_token(&token_bytes);
-    let token_hash = hash_token(&token_bytes)?;
+    let token_hash = hash_token(&token_bytes, secret.expose_secret())?;
     let key = create_verification_key(crate::TokenType::EmailChange, &token_hash);
     let content = UserVerification::new(claims.sub, &claims.username, &email_info.email);
     let scontent = serialize_content(&content)?;
@@ -84,9 +85,10 @@ pub async fn verify_change_email(
     State(appstate): State<AppState>,
     Query(raw_token): Query<TokenPayload>,
 ) -> Result<StatusCode, ApiError> {
+    let secret = appstate.settings.secrets.hmac.expose_secret();
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = decode_token(raw_token.token.expose_secret())?;
-    let hashed_token = hash_token(&token_bytes)?;
+    let hashed_token = hash_token(&token_bytes, secret)?;
     let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
 
     let data = get_verification_data(&mut redis_con, &key)
@@ -106,9 +108,10 @@ pub async fn cancel_change_email(
     State(appstate): State<AppState>,
     Query(raw_token): Query<TokenPayload>,
 ) -> Result<StatusCode, ApiError> {
+    let secret = appstate.settings.secrets.hmac.expose_secret();
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_bytes = decode_token(raw_token.token.expose_secret())?;
-    let hashed_token = hash_token(&token_bytes)?;
+    let hashed_token = hash_token(&token_bytes, secret)?;
     let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
     let t = is_token_exist(&mut redis_con, &key).await?;
 

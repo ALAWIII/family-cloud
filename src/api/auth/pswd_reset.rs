@@ -49,13 +49,14 @@ pub async fn password_reset(
             return Err(e.into());
         } // if user not found
     };
+    let secret = appstate.settings.secrets.hmac.expose_secret();
 
     let from_sender = appstate.settings.email.from_sender;
     let app_url = appstate.settings.app.url();
 
     let token = generate_token_bytes(32)?;
     let raw_token = encode_token(&token);
-    let hashed_token = hash_token(&token)?;
+    let hashed_token = hash_token(&token, secret)?;
     let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     //---------------------
@@ -81,8 +82,9 @@ pub async fn verify_password_reset(
     State(appstate): State<AppState>,
     Query(raw_token): Query<TokenPayload>,
 ) -> Result<Html<String>, ApiError> {
+    let secret = appstate.settings.secrets.hmac.expose_secret();
     let decoded_token = decode_token(raw_token.token.expose_secret())?;
-    let hashed_token = hash_token(&decoded_token)?;
+    let hashed_token = hash_token(&decoded_token, secret)?;
     let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let token_exist = is_token_exist(&mut redis_con, &key).await?;
@@ -97,8 +99,9 @@ pub async fn confirm_password_reset(
     if form.new_password != form.confirm_password {
         return Err(ApiError::BadRequest); // malformed ,invalid password matching
     }
+    let secret = appstate.settings.secrets.hmac.expose_secret();
     let token_byte = decode_token(&form.token)?;
-    let hashed_token = hash_token(&token_byte)?;
+    let hashed_token = hash_token(&token_byte, secret)?;
     let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let udata = get_verification_data(&mut redis_con, &key)

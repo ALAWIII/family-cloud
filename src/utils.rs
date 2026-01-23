@@ -48,8 +48,7 @@ pub fn hmac_token_hex(token: &[u8], secret: &[u8]) -> Result<String, CryptoError
     Ok(hex::encode(tag)) // encodes data to hex strings with lowercase chars
 }
 /// accepts a decoded token as bytes and returns a hashed version of it.
-pub fn hash_token(token: &[u8]) -> Result<String, CryptoError> {
-    let secret = std::env::var("HMAC_SECRET").expect("Failed to load hmac secret");
+pub fn hash_token(token: &[u8], secret: &str) -> Result<String, CryptoError> {
     hmac_token_hex(token, secret.as_bytes())
 }
 //------------------------------- generating access token--------------------------

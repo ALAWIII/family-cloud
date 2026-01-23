@@ -1,4 +1,5 @@
 use axum::{Json, debug_handler, extract::State};
+use secrecy::ExposeSecret;
 
 use crate::{
     ApiError, AppState, Credentials, LoginResponse, UserProfile, UserTokenPayload,
@@ -12,7 +13,7 @@ pub(super) async fn login(
     State(appstate): State<AppState>,
     Json(credentials): Json<Credentials>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let hamcs = appstate.settings.secrets.hmac;
+    let secret = appstate.settings.secrets.hmac;
     let user = fetch_account_info(&appstate.db_pool, &credentials.email).await?;
     if !verify_password(&credentials.password, &user.password_hash)? {
         //500 propogates
@@ -21,14 +22,14 @@ pub(super) async fn login(
     //--------------------------generating refresh token--------------
     let token_bytes = generate_token_bytes(32)?;
     let refresh_token = encode_token(&token_bytes);
-    let token_hash = hash_token(&token_bytes)?;
+    let token_hash = hash_token(&token_bytes, secret.expose_secret())?;
     let mut redis_con = get_redis_con(appstate.redis_pool).await?;
     let key = create_verification_key(crate::TokenType::Refresh, &token_hash);
     let refresh_payload = UserTokenPayload::new(user.id, &user.username);
     let ser_refresh_payload = serialize_content(&refresh_payload)?;
     //-------------------------- generate access token---------------
 
-    let access_token = create_access_token(&refresh_payload, 60 * 15, hamcs)?;
+    let access_token = create_access_token(&refresh_payload, 60 * 15, secret)?;
     store_token_redis(
         &mut redis_con,
         &key,
