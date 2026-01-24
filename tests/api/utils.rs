@@ -1,12 +1,11 @@
 use axum::Router;
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestResponse, TestServer};
-use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
 use family_cloud::{
-    AppConfig, AppSettings, AppState, DatabaseConfig, EmailConfig, RedisConfig, RustfsConfig,
-    Secrets, build_router, decode_token, get_db, get_mail_client, get_redis_pool, get_rustfs,
-    hash_password, hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
+    AppConfig, AppSettings, AppState, Secrets, build_router, decode_token, get_db, get_mail_client,
+    get_redis_pool, get_rustfs, hash_password, hash_token, init_db, init_mail_client,
+    init_redis_pool, init_rustfs,
 };
 use reqwest::Response;
 use scraper::{Html, Selector};
@@ -65,7 +64,7 @@ pub struct AppTest {
     pub state: AppState,
     mailhog_url: String,
     pub mailhog_client: reqwest::Client,
-    containers: AppContainers,
+    pub containers: AppContainers,
     server: TestServer,
 }
 impl AppTest {
@@ -233,10 +232,7 @@ pub async fn setup_app() -> anyhow::Result<AppTest> {
 }
 
 /// Fetches MailHog message ID and extracts token from email body
-pub fn get_mailhog_msg_id_and_extract_raw_token_list(
-    msgs: &[Value],
-    subject: &str,
-) -> Vec<(String, String)> {
+pub fn extract_raw_token_list(msgs: &[Value], subject: &str) -> Vec<String> {
     msgs.iter()
         .filter_map(move |v| {
             if v["Content"]["Headers"]["Subject"][0]
@@ -244,30 +240,23 @@ pub fn get_mailhog_msg_id_and_extract_raw_token_list(
                 .unwrap()
                 .contains(subject)
             {
-                let mailhog_id = v["ID"].as_str().unwrap().to_string();
                 let body = v["Content"]["Body"].as_str().unwrap();
                 let raw_token = extract_token_from_body(body)?;
 
-                return Some((mailhog_id, raw_token));
+                return Some(raw_token);
             }
             None
         })
         .collect()
 }
 
-pub fn convert_raw_tokens_to_hashed(raw_tokens: Vec<&String>, secret: &str) -> Vec<String> {
+pub fn convert_raw_tokens_to_hashed(raw_tokens: &[String], secret: &str) -> Vec<String> {
     raw_tokens
         .iter()
         .map(|t| hash_token(&decode_token(t).unwrap(), secret).unwrap())
         .collect()
 }
 
-pub async fn search_redis_for_hashed_token_id(
-    hashed_token: &str,
-    conn: &mut Connection,
-) -> Option<String> {
-    conn.get(hashed_token).await.unwrap()
-}
 fn extract_token_from_body(email_body: &str) -> Option<String> {
     // Decode quoted-printable
     let decoded = email_body.replace("=3D", "=").replace("=\n", "");
@@ -279,23 +268,6 @@ fn extract_token_from_body(email_body: &str) -> Option<String> {
     let href = element.value().attr("href")?;
 
     href.split("token=").nth(1).map(|s| s.to_string())
-}
-
-pub async fn clean_mailhog(mailhog_id_list: &[(String, String)], app: &AppTest) {
-    for (msg_id, _) in mailhog_id_list {
-        app.delete_messages_mailhog(msg_id)
-            .await
-            .status()
-            .is_success();
-    }
-}
-
-pub async fn search_database_for_email(con: &PgPool, email: &str) -> Option<Uuid> {
-    sqlx::query!("select id from users where email=$1", email)
-        .fetch_optional(con)
-        .await
-        .expect("Failed to execute query") // Handle sqlx error
-        .map(|record| record.id) // Extract id if found
 }
 
 pub async fn create_verified_account(con: &PgPool) -> TestAccount {
