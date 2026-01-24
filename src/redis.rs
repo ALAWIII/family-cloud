@@ -39,7 +39,9 @@ pub async fn store_token_redis(
     conn.set_ex(key_token, serialized_content, ttl).await?; // Can fail Redis op , converted to CRedisError::Connection
     Ok(())
 }
-
+/// checks whether a token still exists in redis or not.
+///
+/// true: exists , false: does not exists
 pub async fn is_token_exist(con: &mut Connection, hashed_token: &str) -> Result<bool, CRedisError> {
     Ok(con.exists(hashed_token).await?)
 }

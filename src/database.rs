@@ -60,7 +60,7 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     .ok_or(DatabaseError::NotFound) // if user not found !!
 }
 
-// Check if email exists (returns user_id)
+/// Check if email exists/verified and stored in database. (returns user_id)
 pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>, DatabaseError> {
     Ok(
         sqlx::query_scalar!("SELECT id FROM users WHERE email = $1", email)

@@ -7,7 +7,7 @@ use lettre::{AsyncSmtpTransport, Tokio1Executor};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 pub type AAppState = Arc<AppState>;
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AppState {
     pub settings: AppSettings,
     pub db_pool: PgPool,
