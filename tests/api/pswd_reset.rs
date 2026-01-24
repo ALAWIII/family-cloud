@@ -1,15 +1,16 @@
 use anyhow::Ok;
 use family_cloud::{create_verification_key, get_db, get_redis_pool};
 use reqwest::StatusCode;
+use secrecy::ExposeSecret;
 
 use crate::{
-    clean_mailhog, convert_raw_tokens_to_hashed, create_app, create_verified_account,
-    get_mailhog_msg_id_and_extract_raw_token_list, search_redis_for_hashed_token_id,
+    clean_mailhog, convert_raw_tokens_to_hashed, create_verified_account,
+    get_mailhog_msg_id_and_extract_raw_token_list, search_redis_for_hashed_token_id, setup_app,
 };
 
 #[tokio::test]
 async fn password_reset_endpoint() -> anyhow::Result<()> {
-    let app = create_app().await;
+    let app = setup_app().await?;
     let db_pool = get_db()?;
     let user = create_verified_account(&db_pool).await;
     let response = app.password_reset_request(&user.email).await;
@@ -27,6 +28,7 @@ async fn password_reset_endpoint() -> anyhow::Result<()> {
             .iter()
             .map(|(_, token)| token)
             .collect(),
+        app.state.settings.secrets.hmac.expose_secret(),
     )
     .iter()
     .map(|v| create_verification_key(token_type, v))

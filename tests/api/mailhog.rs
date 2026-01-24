@@ -4,6 +4,7 @@ use lettre::{AsyncTransport, Message};
 use serde_json::Value;
 use uuid::Uuid;
 
+#[tokio::test]
 async fn test_send_email() -> anyhow::Result<()> {
     dotenv::dotenv().unwrap();
     let mail = get_mail_client()?;

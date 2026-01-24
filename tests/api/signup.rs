@@ -1,14 +1,15 @@
 use family_cloud::{TokenType, create_verification_key, get_db, get_redis_pool};
+use secrecy::ExposeSecret;
 
 use crate::{
-    TestAccount, clean_mailhog, convert_raw_tokens_to_hashed, create_app,
+    TestAccount, clean_mailhog, convert_raw_tokens_to_hashed,
     get_mailhog_msg_id_and_extract_raw_token_list, search_database_for_email,
-    search_redis_for_hashed_token_id,
+    search_redis_for_hashed_token_id, setup_app,
 };
 
 #[tokio::test]
 async fn signup_new_account() -> anyhow::Result<()> {
-    let app = create_app().await;
+    let app = setup_app().await?;
     let user = TestAccount::default();
     let token_type = TokenType::Signup;
     let mut redis_conn = get_redis_pool()?.get().await.unwrap();
@@ -23,11 +24,13 @@ async fn signup_new_account() -> anyhow::Result<()> {
         &messages_before,
         "new account email verification",
     );
-    let token_type_prefixed_hashed_tokens: Vec<String> =
-        convert_raw_tokens_to_hashed(msg_id_token_pairs.iter().map(|(_, token)| token).collect())
-            .iter()
-            .map(|v| create_verification_key(token_type, v))
-            .collect();
+    let token_type_prefixed_hashed_tokens: Vec<String> = convert_raw_tokens_to_hashed(
+        msg_id_token_pairs.iter().map(|(_, token)| token).collect(),
+        app.state.settings.secrets.hmac.expose_secret(),
+    )
+    .iter()
+    .map(|v| create_verification_key(token_type, v))
+    .collect();
 
     // === Phase 3: Verify Tokens Stored in Redis ===
     //

@@ -1,8 +1,7 @@
 use secrecy::SecretBox;
 
 use family_cloud::{
-    decode_token, encode_token, generate_token_bytes, hash_password, hmac_token_hex,
-    verify_password,
+    decode_token, encode_token, generate_token_bytes, hash_password, hash_token, verify_password,
 };
 
 #[test]
@@ -23,10 +22,10 @@ fn encode_decode_token() {
 #[test]
 fn test_hmac_deterministic() {
     let token = b"my_test_token";
-    let secret = b"my_secret_key";
+    let secret = "my_secret_key";
 
-    let hash1 = hmac_token_hex(token, secret).unwrap();
-    let hash2 = hmac_token_hex(token, secret).unwrap();
+    let hash1 = hash_token(token, secret).unwrap();
+    let hash2 = hash_token(token, secret).unwrap();
 
     // Same input must produce same output
     assert_eq!(hash1, hash2);
@@ -34,10 +33,10 @@ fn test_hmac_deterministic() {
 
 #[test]
 fn test_hmac_different_tokens_different_hashes() {
-    let secret = b"my_secret_key";
+    let secret = "my_secret_key";
 
-    let hash1 = hmac_token_hex(b"token1", secret).unwrap();
-    let hash2 = hmac_token_hex(b"token2", secret).unwrap();
+    let hash1 = hash_token(b"token1", secret).unwrap();
+    let hash2 = hash_token(b"token2", secret).unwrap();
 
     // Different tokens produce different hashes
     assert_ne!(hash1, hash2);
@@ -47,8 +46,8 @@ fn test_hmac_different_tokens_different_hashes() {
 fn test_hmac_different_secrets_different_hashes() {
     let token = b"my_token";
 
-    let hash1 = hmac_token_hex(token, b"secret1").unwrap();
-    let hash2 = hmac_token_hex(token, b"secret2").unwrap();
+    let hash1 = hash_token(token, "secret1").unwrap();
+    let hash2 = hash_token(token, "secret2").unwrap();
 
     // Different secrets produce different hashes
     assert_ne!(hash1, hash2);
@@ -57,10 +56,10 @@ fn test_hmac_different_secrets_different_hashes() {
 #[test]
 fn test_hmac_known_vector() {
     // RFC 4231 test vector
-    let key = b"Jefe";
+    let key = "Jefe";
     let data = b"what do ya want for nothing?";
 
-    let result = hmac_token_hex(data, key).unwrap();
+    let result = hash_token(data, key).unwrap();
 
     // Expected HMAC-SHA256 output for this input
     assert_eq!(
@@ -71,7 +70,7 @@ fn test_hmac_known_vector() {
 
 #[test]
 fn test_hmac_output_length() {
-    let hash = hmac_token_hex(b"any_token", b"any_secret").unwrap();
+    let hash = hash_token(b"any_token", "any_secret").unwrap();
 
     // SHA-256 produces 64 hex characters (32 bytes)
     assert_eq!(hash.len(), 64);

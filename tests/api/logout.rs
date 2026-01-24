@@ -2,15 +2,18 @@ use deadpool_redis::redis::AsyncTypedCommands;
 use family_cloud::{
     LoginResponse, create_verification_key, decode_token, get_redis_con, get_redis_pool, hash_token,
 };
+use secrecy::ExposeSecret;
 
-use crate::{AppTest, create_app, login, refresh_token_body_cookie};
+use crate::{AppTest, login, refresh_token_body_cookie, setup_app};
 
 async fn logout() -> anyhow::Result<(AppTest, String, LoginResponse)> {
-    let app = create_app().await;
-    let (resp, user) = login(None, None).await?;
+    let (resp, user, app) = login(None, None).await?;
     let logres: LoginResponse = resp.json();
 
-    let hashed_token = hash_token(&decode_token(&logres.refresh_token)?)?;
+    let hashed_token = hash_token(
+        &decode_token(&logres.refresh_token)?,
+        app.state.settings.secrets.hmac.expose_secret(),
+    )?;
     let key = create_verification_key(family_cloud::TokenType::Refresh, &hashed_token);
 
     Ok((app, key, logres))
@@ -52,7 +55,7 @@ async fn logout_body() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn logout_non() -> anyhow::Result<()> {
-    let app = create_app().await;
+    let app = setup_app().await?;
 
     // logout to delete the refresh token
     let logout_resp = app.logout_request().await;

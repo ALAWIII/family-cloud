@@ -3,11 +3,10 @@ use std::time::Duration;
 use family_cloud::{LoginResponse, TokenPayload};
 use secrecy::ExposeSecret;
 
-use crate::{create_app, login, refresh_token_body_cookie};
+use crate::{login, refresh_token_body_cookie};
 #[tokio::test]
 async fn refresh() -> anyhow::Result<()> {
-    let app = create_app().await;
-    let (loginres, _) = login(None, None).await?;
+    let (loginres, account, app) = login(None, None).await?;
     let logres: LoginResponse = loginres.json();
     let (cookie, body) = refresh_token_body_cookie(&logres.refresh_token);
     let ref_bod = app.refresh_body_request(&body).await;

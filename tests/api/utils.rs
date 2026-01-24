@@ -4,8 +4,9 @@ use axum_test::{TestResponse, TestServer};
 use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 
 use family_cloud::{
-    build_router, decode_token, get_db, hash_password, hash_token, init_db, init_mail_client,
-    init_redis_pool, init_rustfs,
+    AppConfig, AppSettings, AppState, DatabaseConfig, EmailConfig, RedisConfig, RustfsConfig,
+    Secrets, build_router, decode_token, get_db, get_mail_client, get_redis_pool, get_rustfs,
+    hash_password, hash_token, init_db, init_mail_client, init_redis_pool, init_rustfs,
 };
 use reqwest::Response;
 use scraper::{Html, Selector};
@@ -15,10 +16,10 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-pub struct AppTest {
-    server: TestServer,
-    pub mailhog_client: reqwest::Client,
-}
+use crate::{
+    AppContainers, setup_db, setup_mailhog_container, setup_redis_container, setup_rustfs,
+};
+
 #[derive(Debug, Serialize)]
 pub struct TestAccount {
     pub id: Uuid,
@@ -59,13 +60,23 @@ impl Default for TestAccount {
         }
     }
 }
-
+#[derive(Debug)]
+pub struct AppTest {
+    pub state: AppState,
+    mailhog_url: String,
+    pub mailhog_client: reqwest::Client,
+    containers: AppContainers,
+    server: TestServer,
+}
 impl AppTest {
-    pub fn new(app: Router) -> Self {
+    pub fn new(app: Router, app_cot: AppContainers, state: AppState) -> Self {
         let mailhog_client = reqwest::Client::new();
         let server = TestServer::new(app).unwrap();
-
+        let m_url = std::env::var("MAILHOG_URL").expect("Failed to get mailport"); // port 8025 for testing and fetching the mail server ,while 1025 for the server to send emails for clients
         Self {
+            state,
+            mailhog_url: m_url,
+            containers: app_cot,
             mailhog_client,
             server,
         }
@@ -143,10 +154,29 @@ impl AppTest {
     pub async fn refresh_non_request(&self) -> TestResponse {
         self.server.post("/api/auth/refresh").await
     }
+    pub async fn change_email_request(&self, email: &str, access_token: &str) -> TestResponse {
+        self.server
+            .post("/api/auth/change-email")
+            .json(&json!({
+                "email": email
+            }))
+            .add_header("Authorization", format!("Bearer {}", access_token))
+            .await
+    }
+    pub async fn verify_change_email(&self, token: &str) -> TestResponse {
+        self.server
+            .get(&format!("/api/auth/change-email/verify?token={}", token))
+            .await
+    }
+    pub async fn cancel_change_email(&self, token: &str) -> TestResponse {
+        self.server
+            .get(&format!("/api/auth/change-email/cancel?token={}", token))
+            .await
+    }
     pub async fn get_all_messages_mailhog(&self) -> Vec<Value> {
         let response = self
             .mailhog_client
-            .get("http://localhost:8025/api/v2/messages")
+            .get(format!("{}/api/v2/messages", self.mailhog_url)) // http://localhost:<port>
             .send()
             .await
             .expect("Failed to query MailHog API");
@@ -158,24 +188,48 @@ impl AppTest {
     }
     pub async fn delete_messages_mailhog(&self, msg_id: &str) -> Response {
         self.mailhog_client
-            .delete(format!("http://localhost:8025/api/v1/messages/{}", msg_id))
+            .delete(format!("{}/api/v1/messages/{}", self.mailhog_url, msg_id))
             .send()
             .await
             .expect("Failed to delete email message from server")
     }
 }
 
-pub async fn establish_db_connection() {
-    dotenv::dotenv();
-    init_redis_pool().await;
-    init_db().await;
-    init_rustfs().await;
-    init_mail_client();
-}
-
-pub async fn create_app() -> AppTest {
-    establish_db_connection().await;
-    AppTest::new(build_router().unwrap())
+pub async fn setup_app() -> anyhow::Result<AppTest> {
+    let (ml, email_conf) = setup_mailhog_container().await?;
+    let (rd, rdconf) = setup_redis_container().await?;
+    let db = setup_db();
+    let rustfs_conf = setup_rustfs();
+    init_mail_client(&email_conf)?;
+    init_redis_pool(&rdconf).await?;
+    init_db(&db).await?;
+    let settings = AppSettings {
+        app: AppConfig {
+            host: "localhost".into(),
+            port: 5050,
+        },
+        database: db,
+        email: email_conf,
+        rustfs: rustfs_conf,
+        secrets: Secrets {
+            hmac: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
+            rustfs: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
+        },
+        redis: rdconf,
+    };
+    init_rustfs(&settings).await;
+    let cots = AppContainers {
+        redis: rd,
+        mailhog: ml,
+    };
+    let state = AppState {
+        settings,
+        db_pool: get_db()?,
+        rustfs_con: get_rustfs(),
+        redis_pool: get_redis_pool()?,
+        mail_client: get_mail_client()?,
+    };
+    Ok(AppTest::new(build_router(state.clone())?, cots, state))
 }
 
 /// Fetches MailHog message ID and extracts token from email body
@@ -201,10 +255,10 @@ pub fn get_mailhog_msg_id_and_extract_raw_token_list(
         .collect()
 }
 
-pub fn convert_raw_tokens_to_hashed(raw_tokens: Vec<&String>) -> Vec<String> {
+pub fn convert_raw_tokens_to_hashed(raw_tokens: Vec<&String>, secret: &str) -> Vec<String> {
     raw_tokens
         .iter()
-        .map(|t| hash_token(&decode_token(t).unwrap()).unwrap())
+        .map(|t| hash_token(&decode_token(t).unwrap(), secret).unwrap())
         .collect()
 }
 
@@ -229,12 +283,10 @@ fn extract_token_from_body(email_body: &str) -> Option<String> {
 
 pub async fn clean_mailhog(mailhog_id_list: &[(String, String)], app: &AppTest) {
     for (msg_id, _) in mailhog_id_list {
-        assert!(
-            app.delete_messages_mailhog(msg_id)
-                .await
-                .status()
-                .is_success()
-        );
+        app.delete_messages_mailhog(msg_id)
+            .await
+            .status()
+            .is_success();
     }
 }
 
@@ -264,8 +316,9 @@ pub async fn create_verified_account(con: &PgPool) -> TestAccount {
 pub async fn login(
     email: Option<&str>,
     pswd: Option<&str>,
-) -> anyhow::Result<(TestResponse, TestAccount)> {
-    let app = create_app().await;
+) -> anyhow::Result<(TestResponse, TestAccount, AppTest)> {
+    let app = setup_app().await?;
+
     let db_pool = get_db()?;
     let mut user = create_verified_account(&db_pool).await;
     let _ = email.is_some_and(|e| user.email(e));
@@ -275,6 +328,7 @@ pub async fn login(
         app.login_request(Some(&user.email), Some(&user.password))
             .await,
         user,
+        app,
     ))
 }
 pub fn refresh_token_body_cookie(ref_token: &str) -> (Cookie<'_>, Value) {

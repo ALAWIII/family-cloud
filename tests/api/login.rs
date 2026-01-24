@@ -1,10 +1,10 @@
 use family_cloud::{LoginResponse, get_db};
 
-use crate::{create_app, create_verified_account, login};
+use crate::{create_verified_account, login, setup_app};
 
 #[tokio::test]
 async fn login_valid_credits_endpoint() -> anyhow::Result<()> {
-    let (resp, user) = login(None, None).await?;
+    let (resp, user, app) = login(None, None).await?;
     resp.assert_status_ok();
     let login_resp: LoginResponse = resp.json();
     assert!(!login_resp.access_token.is_empty());
@@ -35,7 +35,7 @@ async fn login_invalid_email() -> anyhow::Result<()> {
 //--------------------- deserializing problems
 #[tokio::test]
 async fn login_missing_fields() -> anyhow::Result<()> {
-    let app = create_app().await;
+    let app = setup_app().await?;
     let db_pool = get_db()?;
     let account = create_verified_account(&db_pool).await;
     app.login_request(Some(&account.email), None)
