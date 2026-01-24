@@ -1,11 +1,10 @@
 use anyhow::Ok;
-use family_cloud::{create_verification_key, get_db, get_redis_pool};
+use family_cloud::{create_verification_key, get_db, get_redis_pool, is_token_exist};
 use reqwest::StatusCode;
 use secrecy::ExposeSecret;
 
 use crate::{
-    clean_mailhog, convert_raw_tokens_to_hashed, create_verified_account,
-    get_mailhog_msg_id_and_extract_raw_token_list, search_redis_for_hashed_token_id, setup_app,
+    convert_raw_tokens_to_hashed, create_verified_account, extract_raw_token_list, setup_app,
 };
 
 #[tokio::test]
@@ -22,28 +21,23 @@ async fn password_reset_endpoint() -> anyhow::Result<()> {
     let messages = app.get_all_messages_mailhog().await;
 
     let mut redis_conn = get_redis_pool()?.get().await.unwrap();
-    let msg_id_and_raw_token = get_mailhog_msg_id_and_extract_raw_token_list(&messages, "Password");
-    let hashed_tokens: Vec<String> = convert_raw_tokens_to_hashed(
-        msg_id_and_raw_token
+    let raw_tokens = extract_raw_token_list(&messages, "Password");
+    let hashed_tokens: Vec<String> =
+        convert_raw_tokens_to_hashed(&raw_tokens, app.state.settings.secrets.hmac.expose_secret())
             .iter()
-            .map(|(_, token)| token)
-            .collect(),
-        app.state.settings.secrets.hmac.expose_secret(),
-    )
-    .iter()
-    .map(|v| create_verification_key(token_type, v))
-    .collect();
+            .map(|v| create_verification_key(token_type, v))
+            .collect();
     // === Phase 3: Verify Tokens Stored in Redis ===
     for hashed_token in &hashed_tokens {
-        let pending_account = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        let pending_account = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
-            pending_account.is_some(),
+            pending_account,
             "Token should exist in Redis before confirming the new password"
         );
     }
 
     // === Phase 4: Complete Verification ===
-    for (_, raw_token) in &msg_id_and_raw_token {
+    for raw_token in &raw_tokens {
         // it will return a page to fill in the password
         let response = app
             .click_verify_url_in_email_message(verify_url, raw_token)
@@ -72,13 +66,11 @@ async fn password_reset_endpoint() -> anyhow::Result<()> {
 
     // === Phase 5: Verify Tokens are Deleted from Redis ===
     for hashed_token in &hashed_tokens {
-        let password_reset = search_redis_for_hashed_token_id(hashed_token, &mut redis_conn).await;
+        let password_reset = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
-            password_reset.is_none(),
+            !password_reset,
             "Token should not exist in Redis after confirming the new password"
         );
     }
-    // === Phase 6: cleaning and deleting all password reset messages from mailhog inbox ===
-    clean_mailhog(&msg_id_and_raw_token, &app).await;
     Ok(())
 }
