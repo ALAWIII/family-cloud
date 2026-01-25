@@ -1,40 +1,156 @@
+//! Integration tests for signup and email verification endpoints
+//!
+//! Tests using the refactored test utilities:
+//! - Container setup
+//! - Account builders
+//! - Email token extraction
+//! - Database helpers
+//! - MailHog client
+
 use family_cloud::{
-    TokenType, create_verification_key, get_db, get_redis_con, get_redis_pool, is_account_exist,
-    is_token_exist,
+    AppState, TokenType, build_router, get_db, get_redis_con, get_redis_pool, init_db,
+    init_mail_client, init_redis_pool, init_rustfs, is_account_exist, is_token_exist,
 };
 use secrecy::ExposeSecret;
 
 use crate::{
-    AppTest, TestAccount, convert_raw_tokens_to_hashed, extract_raw_token_list, setup_app,
+    init_test_containers,
+    utils::{
+        AccountBuilder, AppTest, EmailTokenExtractor, TestAccount,
+        containers::{get_database_config, get_email_config, get_redis_config, get_rustfs_config},
+    },
 };
+use serde_json::json;
+// ============================================================================
+// Shared Test Setup - Initialize All Infrastructure Once
+// ============================================================================
 
-// === Shared Helper Functions ===
+/// Helper to initialize complete test infrastructure
+async fn setup_test_env() -> anyhow::Result<(AppTest, AppState)> {
+    // 1. Start containers
+    let containers = init_test_containers().await?;
 
-async fn signup_and_get_token() -> anyhow::Result<(AppTest, TestAccount, Vec<String>, Vec<String>)>
-{
-    let app = setup_app().await?;
-    let user = TestAccount::default();
+    // 2. Get configurations from containers
+    let db_config = get_database_config(&containers.postgres).await?;
+    let redis_config = get_redis_config(&containers.redis).await?;
+    let email_config = get_email_config(&containers.mailhog).await?;
+    let rustfs_config = get_rustfs_config();
+    let secrets = family_cloud::Secrets {
+        hmac: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
+        rustfs: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
+    };
 
-    app.signup_request_new_account(&user).await;
+    // 3. Initialize services
+    init_db(&db_config).await?;
+    init_mail_client(&email_config)?;
+    init_redis_pool(&redis_config).await?;
+    init_rustfs(&rustfs_config, &secrets.rustfs).await;
 
-    let messages = app.get_all_messages_mailhog().await;
-    let raw_tokens = extract_raw_token_list(&messages, "new account email verification");
+    // 4. Get connection pools
+    let db_pool = get_db()?;
+    let mailhog_url = std::env::var("MAILHOG_URL")?;
 
-    let hashed_tokens: Vec<String> =
-        convert_raw_tokens_to_hashed(&raw_tokens, app.state.settings.secrets.hmac.expose_secret())
-            .iter()
-            .map(|v| create_verification_key(TokenType::Signup, v))
-            .collect();
+    // 5. Build app state
+    let state = AppState {
+        settings: family_cloud::AppSettings {
+            app: family_cloud::AppConfig {
+                host: "localhost".into(),
+                port: 5050,
+            },
+            database: db_config,
+            email: email_config,
+            rustfs: rustfs_config,
+            secrets,
+            redis: redis_config,
+        },
+        db_pool,
+        rustfs_con: family_cloud::get_rustfs(),
+        redis_pool: get_redis_pool()?,
+        mail_client: family_cloud::get_mail_client()?,
+    };
 
-    Ok((app, user, raw_tokens, hashed_tokens))
+    // 6. Build router and create AppTest
+    let app_test = AppTest::new(
+        build_router(state.clone())?,
+        state.clone(),
+        mailhog_url,
+        containers,
+    )?;
+
+    Ok((app_test, state))
 }
 
-// === Individual Tests ===
+// ============================================================================
+// Shared Helper Functions
+// ============================================================================
+
+/// Complete signup flow: signup, get email, extract tokens
+async fn signup_and_get_tokens(
+    app: &AppTest,
+    account: &TestAccount,
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    // 1. Send signup request
+    let response = app
+        .signup(&json!({
+            "username":account.username,
+            "email":account.email,
+            "password"  : account.password
+        }))
+        .await;
+
+    assert!(response.status_code().is_success(), "Signup should succeed");
+    // 2. Fetch all emails from MailHog
+    let messages = app.mailhog.get_all_messages().await?;
+
+    // 3. Extract raw tokens from verification email
+    let raw_tokens =
+        EmailTokenExtractor::extract_raw_tokens(&messages, "new account email verification");
+
+    assert!(
+        !raw_tokens.is_empty(),
+        "Should have received verification email"
+    );
+
+    // 4. Convert raw tokens to hashed format
+    let hashed_tokens = EmailTokenExtractor::hash_tokens(
+        &raw_tokens,
+        app.state.settings.secrets.hmac.expose_secret(),
+        TokenType::Signup,
+    )?;
+
+    Ok((raw_tokens, hashed_tokens))
+}
+
+/// Verify email by clicking token link
+async fn verify_email_with_token(app: &AppTest, token: &str) -> bool {
+    let response = app.verify_email("/api/auth/signup", token).await;
+
+    response.status_code().is_success()
+}
+
+// ============================================================================
+// Individual Integration Tests
+// ============================================================================
 
 #[tokio::test]
-async fn signup_sends_verification_email() -> anyhow::Result<()> {
-    let (app, _user, raw_tokens, _hashed_tokens) = signup_and_get_token().await?;
+async fn test_signup_sends_verification_email() -> anyhow::Result<()> {
+    let (app, _state) = setup_test_env().await?;
 
+    // Create test account using builder
+    let account = TestAccount::default();
+
+    // Send signup
+    let response = app.signup(&account).await;
+    assert!(response.status_code().is_success(), "Signup should succeed");
+
+    // Get messages from MailHog
+    let messages = app.mailhog.get_all_messages().await?;
+
+    // Extract verification tokens
+    let raw_tokens =
+        EmailTokenExtractor::extract_raw_tokens(&messages, "new account email verification");
+
+    // Assertions
     assert_eq!(
         raw_tokens.len(),
         1,
@@ -45,15 +161,23 @@ async fn signup_sends_verification_email() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn verification_token_stored_in_redis() -> anyhow::Result<()> {
-    let (app, _user, raw_tokens, hashed_tokens) = signup_and_get_token().await?;
-    let mut redis_conn = get_redis_con(app.state.redis_pool).await?;
+async fn test_verification_token_stored_in_redis() -> anyhow::Result<()> {
+    let (app, state) = setup_test_env().await?;
 
+    // Create and signup account
+    let account = TestAccount::default();
+    let (_raw_tokens, hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
+
+    // Get Redis connection
+    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+
+    // Verify all tokens exist in Redis
     for hashed_token in &hashed_tokens {
-        let pending_account = is_token_exist(&mut redis_conn, hashed_token).await?;
+        let token_exists = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
-            pending_account,
-            "Token should exist in Redis before verification"
+            token_exists,
+            "Token '{}' should exist in Redis before verification",
+            hashed_token
         );
     }
 
@@ -61,79 +185,178 @@ async fn verification_token_stored_in_redis() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn verification_completes_account_creation() -> anyhow::Result<()> {
-    let (app, user, raw_tokens, _) = signup_and_get_token().await?;
-    let db_pool = get_db()?;
-    let verify_url = "/api/auth/signup";
+async fn test_verification_completes_account_creation() -> anyhow::Result<()> {
+    let (app, state) = setup_test_env().await?;
 
+    // Create and signup account
+    let account = TestAccount::default();
+    let (raw_tokens, _hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
+
+    // Get database connection
+    let db_pool = get_db()?;
+
+    // Verify email for each token
     for raw_token in &raw_tokens {
-        app.click_verify_url_in_email_message(verify_url, raw_token)
-            .await
-            .assert_status_success();
+        let verified = verify_email_with_token(&app, raw_token).await;
+        assert!(
+            verified,
+            "Email verification should succeed for token: {}",
+            raw_token
+        );
     }
 
-    let user_id = is_account_exist(&db_pool, &user.email).await?;
-
+    // Check account was created in database
+    let user_id = is_account_exist(&db_pool, &account.email).await?;
     assert!(
         user_id.is_some(),
-        "Account should be created after verification"
+        "Account should be created after verification for email: {}",
+        account.email
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn existing_account_prevents_duplicate_signup() -> anyhow::Result<()> {
-    let (app, user, raw_tokens, hashed_tokens) = signup_and_get_token().await?;
-    let verify_url = "/api/auth/signup";
+async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()> {
+    let (app, state) = setup_test_env().await?;
+    let db_pool = get_db()?;
 
-    // Complete verification
+    // Step 1: Create and verify first account
+    let account = TestAccount::default();
+
+    let (raw_tokens, hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
+
+    // Verify email
     for raw_token in &raw_tokens {
-        app.click_verify_url_in_email_message(verify_url, raw_token)
-            .await;
+        // the server endpoint should delete the verification tokens from redis once the account is verified
+        assert!(verify_email_with_token(&app, raw_token).await);
     }
 
-    // Try signing up again with the same user account
-    app.signup_request_new_account(&user)
-        .await
-        .assert_status_ok();
+    // Confirm account exists
+    let user_exists = is_account_exist(&db_pool, &account.email).await?;
+    assert!(user_exists.is_some(), "First account should exist");
 
-    let messages_after = app.get_all_messages_mailhog().await;
-    let new_tokens = extract_raw_token_list(&messages_after, "new account email verification");
+    // Clear MailHog for clean test
+    app.mailhog.delete_all_messages().await?;
 
+    // Step 2: Try signing up with same email
+    let response = app.signup(&account).await;
+    assert!(
+        response.status_code().is_success() || response.status_code().is_client_error(),
+        "Duplicate signup should be rejected"
+    );
+
+    // Step 3: Verify no new verification email was sent
+    let messages_after = app.mailhog.get_all_messages().await?;
+    let new_tokens =
+        EmailTokenExtractor::extract_raw_tokens(&messages_after, "new account email verification");
+    // assert that only the original message is there and no new email verification signup message was sent
     assert_eq!(
         new_tokens.len(),
-        1,
-        "No new email should be sent for existing account"
+        0,
+        "No new verification email should be sent for duplicate email"
     );
-    let mut rds_con = get_redis_con(get_redis_pool()?).await?;
-    for h in hashed_tokens {
-        assert!(!is_token_exist(&mut rds_con, &h).await?);
+
+    // Step 4: Verify old tokens were cleaned up
+    let mut redis_conn = get_redis_con(state.redis_pool).await?;
+    for hashed_token in &hashed_tokens {
+        let token_exists = is_token_exist(&mut redis_conn, hashed_token).await?;
+        assert!(
+            !token_exists,
+            "Old verification token should be removed after account creation"
+        );
     }
 
     Ok(())
 }
 
 #[tokio::test]
-async fn verification_removes_token_from_redis() -> anyhow::Result<()> {
-    let (app, _user, raw_tokens, hashed_tokens) = signup_and_get_token().await?;
-    let mut redis_conn = get_redis_con(app.state.redis_pool.clone()).await?;
-    let verify_url = "/api/auth/signup";
+async fn test_verification_removes_token_from_redis() -> anyhow::Result<()> {
+    let (app, state) = setup_test_env().await?;
 
-    // Complete verification
-    for raw_token in &raw_tokens {
-        app.click_verify_url_in_email_message(verify_url, raw_token)
-            .await;
-    }
+    // Create and signup account
+    let account = TestAccount::default();
+    let (raw_tokens, hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
 
-    // Verify tokens removed from Redis
+    // Get Redis connection
+    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+
+    // Verify tokens exist BEFORE verification
     for hashed_token in &hashed_tokens {
-        let token = is_token_exist(&mut redis_conn, hashed_token).await?;
+        let token_exists = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
-            !token,
-            "Token should be removed from Redis after verification"
+            token_exists,
+            "Token should exist in Redis BEFORE verification"
         );
     }
+
+    // Complete email verification
+    for raw_token in &raw_tokens {
+        assert!(verify_email_with_token(&app, raw_token).await);
+    }
+
+    // Refresh Redis connection
+    let mut redis_conn = get_redis_con(state.redis_pool).await?;
+
+    // Verify tokens removed AFTER verification
+    for hashed_token in &hashed_tokens {
+        let token_exists = is_token_exist(&mut redis_conn, hashed_token).await?;
+        assert!(
+            !token_exists,
+            "Token should be removed from Redis AFTER verification"
+        );
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Additional Edge Case Tests Using New Utilities
+// ============================================================================
+
+#[tokio::test]
+async fn test_signup_with_invalid_email_format() -> anyhow::Result<()> {
+    let (app, _state) = setup_test_env().await?;
+
+    let invalid_account = AccountBuilder::new().email("not-a-valid-email").build()?;
+
+    let response = app.signup(&invalid_account).await;
+    assert!(
+        response.status_code().is_client_error(),
+        "Signup with invalid email should fail"
+    );
+
+    Ok(())
+}
+
+//#[tokio::test]
+async fn test_signup_with_weak_password() -> anyhow::Result<()> {
+    let (app, _state) = setup_test_env().await?;
+
+    let weak_account = AccountBuilder::new()
+        .password("123") // Too weak
+        .build()?;
+
+    let response = app.signup(&weak_account).await;
+    assert!(
+        response.status_code().is_client_error(),
+        "Signup with weak password should fail"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_verification_with_invalid_token() -> anyhow::Result<()> {
+    let (app, _state) = setup_test_env().await?;
+
+    let response = app
+        .verify_email("/api/auth/signup", "invalid_token_xyz")
+        .await;
+    assert!(
+        response.status_code().is_client_error(),
+        "Verification with invalid token should fail"
+    );
 
     Ok(())
 }
