@@ -50,7 +50,7 @@ pub async fn run() -> anyhow::Result<()> {
     let state = setup_app()?;
     init_mail_client(&state.settings.email)?;
     init_redis_pool(&state.settings.redis).await?;
-    init_rustfs(&state.settings).await;
+    init_rustfs(&state.settings.rustfs, &state.settings.secrets.rustfs).await;
     init_db(&state.settings.database).await?;
     let router = build_router(state)?;
     start_app_server(router).await?;
