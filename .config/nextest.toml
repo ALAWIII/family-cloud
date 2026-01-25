@@ -1,0 +1,2 @@
+[profile.default]
+slow-timeout = { period = "10m", terminate-after = 1, grace-period = "30s" }
