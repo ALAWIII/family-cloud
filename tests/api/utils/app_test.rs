@@ -13,7 +13,7 @@ use super::MailHogClient;
 
 /// Main test harness for authentication endpoints
 pub struct AppTest {
-    _containers: TestContainers,
+    pub containers: TestContainers,
     pub state: AppState,
     server: TestServer,
     pub mailhog: MailHogClient,
@@ -31,7 +31,7 @@ impl AppTest {
         let mailhog = MailHogClient::new(mailhog_url);
 
         Ok(Self {
-            _containers: containers,
+            containers,
             state,
             server,
             mailhog,

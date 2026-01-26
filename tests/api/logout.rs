@@ -14,66 +14,10 @@ use family_cloud::{
 use reqwest::StatusCode;
 use secrecy::ExposeSecret;
 
-use crate::utils::{
-    AppTest, TestDatabase,
-    containers::{
-        get_database_config, get_email_config, get_redis_config, get_rustfs_config,
-        init_test_containers,
-    },
-    create_token_pair,
+use crate::{
+    setup_test_env,
+    utils::{AppTest, TestDatabase, create_token_pair},
 };
-
-// ============================================================================
-// Shared Test Setup - Initialize All Infrastructure
-// ============================================================================
-
-/// Helper to initialize complete test infrastructure
-async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
-    let containers = init_test_containers().await?;
-
-    let db_config = get_database_config(&containers.postgres).await?;
-    let redis_config = get_redis_config(&containers.redis).await?;
-    let email_config = get_email_config(&containers.mailhog).await?;
-    let rustfs_config = get_rustfs_config();
-    let secrets = family_cloud::Secrets {
-        hmac: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
-        rustfs: "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".into(),
-    };
-    family_cloud::init_db(&db_config).await?;
-    family_cloud::init_mail_client(&email_config)?;
-    family_cloud::init_redis_pool(&redis_config).await?;
-    family_cloud::init_rustfs(&rustfs_config, &secrets.rustfs).await;
-
-    let db_pool = family_cloud::get_db()?;
-    let mailhog_url = std::env::var("MAILHOG_URL")?;
-
-    let state = family_cloud::AppState {
-        settings: family_cloud::AppSettings {
-            app: family_cloud::AppConfig {
-                host: "localhost".into(),
-                port: 5050,
-            },
-            database: db_config,
-            email: email_config,
-            rustfs: rustfs_config,
-            secrets,
-            redis: redis_config,
-        },
-        db_pool,
-        rustfs_con: family_cloud::get_rustfs(),
-        redis_pool: family_cloud::get_redis_pool()?,
-        mail_client: family_cloud::get_mail_client()?,
-    };
-
-    let app_test = AppTest::new(
-        family_cloud::build_router(state.clone())?,
-        state.clone(),
-        mailhog_url,
-        containers,
-    )?;
-
-    Ok((app_test, state))
-}
 
 // ============================================================================
 // Helper: Setup with Authenticated User & Token Key

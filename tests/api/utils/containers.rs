@@ -67,6 +67,7 @@ async fn setup_postgres_container() -> anyhow::Result<ContainerAsync<GenericImag
             "-c",
             "full_page_writes=off",
         ])
+        .with_startup_timeout(Duration::from_secs(60 * 10))
         .start()
         .await?;
 
@@ -95,6 +96,7 @@ async fn setup_redis_container() -> anyhow::Result<ContainerAsync<GenericImage>>
     let container = GenericImage::new("yobasystems/alpine-redis", "latest")
         .with_exposed_port(REDIS_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+        .with_startup_timeout(Duration::from_secs(60 * 10))
         .start()
         .await?;
 
@@ -107,6 +109,7 @@ async fn setup_mailhog_container() -> anyhow::Result<ContainerAsync<GenericImage
     let container = GenericImage::new("cd2team/mailhog", "latest")
         .with_exposed_port(MAILHOG_SMTP_PORT.tcp())
         .with_exposed_port(MAILHOG_WEB_PORT.tcp())
+        .with_startup_timeout(Duration::from_secs(60 * 10))
         .start()
         .await?;
     let host = container.get_host().await?;

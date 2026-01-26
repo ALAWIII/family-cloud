@@ -10,68 +10,11 @@
 use family_cloud::{TokenType, get_db, get_redis_con, is_token_exist};
 use reqwest::StatusCode;
 use secrecy::ExposeSecret;
-use serde_json::to_string;
 
-use crate::utils::{
-    AppTest, EmailTokenExtractor, TestAccount, TestDatabase,
-    containers::{
-        get_database_config, get_email_config, get_redis_config, get_rustfs_config,
-        init_test_containers,
-    },
+use crate::{
+    setup_test_env,
+    utils::{AppTest, EmailTokenExtractor, TestAccount, TestDatabase},
 };
-
-// ============================================================================
-// Shared Test Setup - Initialize All Infrastructure
-// ============================================================================
-
-/// Helper to initialize complete test infrastructure
-async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
-    let containers = init_test_containers().await?;
-
-    let db_config = get_database_config(&containers.postgres).await?;
-    let redis_config = get_redis_config(&containers.redis).await?;
-    let email_config = get_email_config(&containers.mailhog).await?;
-    let rustfs_config = get_rustfs_config();
-    let hmac = "OIodbFUiNK34xthjR0newczMC6HaAyksJS1GXfYZ".to_string();
-    let rustfs = hmac.to_string();
-    family_cloud::init_db(&db_config).await?;
-    family_cloud::init_mail_client(&email_config)?;
-    family_cloud::init_redis_pool(&redis_config).await?;
-    family_cloud::init_rustfs(&rustfs_config, &rustfs.clone().into()).await;
-
-    let db_pool = get_db()?;
-    let mailhog_url = std::env::var("MAILHOG_URL")?;
-
-    let state = family_cloud::AppState {
-        settings: family_cloud::AppSettings {
-            app: family_cloud::AppConfig {
-                host: "localhost".into(),
-                port: 5050,
-            },
-            database: db_config,
-            email: email_config,
-            rustfs: rustfs_config,
-            secrets: family_cloud::Secrets {
-                hmac: hmac.into(),
-                rustfs: rustfs.into(),
-            },
-            redis: redis_config,
-        },
-        db_pool,
-        rustfs_con: family_cloud::get_rustfs(),
-        redis_pool: family_cloud::get_redis_pool()?,
-        mail_client: family_cloud::get_mail_client()?,
-    };
-
-    let app_test = AppTest::new(
-        family_cloud::build_router(state.clone())?,
-        state.clone(),
-        mailhog_url,
-        containers,
-    )?;
-
-    Ok((app_test, state))
-}
 
 // ============================================================================
 // Shared Helper: Test Setup with Verified Account
