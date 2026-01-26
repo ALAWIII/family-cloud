@@ -19,7 +19,7 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
     let containers = init_test_containers().await?;
 
     let db_config = get_database_config("localhost", 5432).await?;
-    let redis_config = get_redis_config(&containers.redis).await?;
+    let redis_config = get_redis_config("localhost", 6379).await?;
     let email_config = get_email_config(&containers.mailhog).await?;
     let rustfs_config = get_rustfs_config();
     let secrets = family_cloud::Secrets {

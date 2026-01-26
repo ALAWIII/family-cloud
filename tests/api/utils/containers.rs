@@ -17,14 +17,12 @@ use tokio::time::sleep;
 /// Manages all test infrastructure containers
 #[derive(Debug)]
 pub struct TestContainers {
-    pub redis: ContainerAsync<GenericImage>,
     pub mailhog: ContainerAsync<GenericImage>,
 }
 
 impl TestContainers {
     /// Stop all containers gracefully
     pub async fn stop(self) -> anyhow::Result<()> {
-        self.redis.stop().await?;
         self.mailhog.stop().await?;
         Ok(())
     }
@@ -37,15 +35,12 @@ const POSTGRES_PORT: u16 = 5432;
 
 /// Initialize all test containers
 pub async fn init_test_containers() -> anyhow::Result<TestContainers> {
-    let (redis, mailhog) = tokio::join!(
+    let mailhog =
         // setup_postgres_container(), // uses WaitFor::message_on_stdout or list_port
-        setup_redis_container(),   // WaitFor::listening_port
-        setup_mailhog_container()  // WaitFor::listening_port
-    );
-    Ok(TestContainers {
-        redis: redis?,
-        mailhog: mailhog?,
-    })
+        // setup_redis_container(),   // WaitFor::listening_port
+        setup_mailhog_container() .await?; // WaitFor::listening_port
+
+    Ok(TestContainers { mailhog })
 }
 
 /// Setup PostgreSQL container with proper wait conditions
@@ -128,10 +123,7 @@ pub async fn get_database_config(host: &str, port: u16) -> anyhow::Result<Databa
 }
 
 /// Get Redis configuration from container
-pub async fn get_redis_config(redis: &ContainerAsync<GenericImage>) -> anyhow::Result<RedisConfig> {
-    let host = redis.get_host().await?;
-    let port = redis.get_host_port_ipv4(REDIS_PORT).await?;
-
+pub async fn get_redis_config(host: &str, port: u16) -> anyhow::Result<RedisConfig> {
     Ok(RedisConfig {
         host: host.to_string(),
         port,
