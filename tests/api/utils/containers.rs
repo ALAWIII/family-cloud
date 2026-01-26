@@ -3,14 +3,10 @@
 //!
 //! Manages Docker containers for PostgreSQL, Redis, and MailHog
 use family_cloud::{DatabaseConfig, EmailConfig, RedisConfig, RustfsConfig};
-use secrecy::{ExposeSecret, SecretString};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use secrecy::SecretString;
 use std::{env, time::Duration};
 use testcontainers::{
-    ContainerAsync, GenericImage, ImageExt,
-    core::{IntoContainerPort, WaitFor},
-    runners::AsyncRunner,
+    ContainerAsync, GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
 };
 use tokio::time::sleep;
 
@@ -28,72 +24,14 @@ impl TestContainers {
     }
 }
 
-const REDIS_PORT: u16 = 6379;
 const MAILHOG_SMTP_PORT: u16 = 1025;
 const MAILHOG_WEB_PORT: u16 = 8025;
-const POSTGRES_PORT: u16 = 5432;
 
 /// Initialize all test containers
 pub async fn init_test_containers() -> anyhow::Result<TestContainers> {
-    let mailhog =
-        // setup_postgres_container(), // uses WaitFor::message_on_stdout or list_port
-        // setup_redis_container(),   // WaitFor::listening_port
-        setup_mailhog_container() .await?; // WaitFor::listening_port
+    let mailhog = setup_mailhog_container().await?;
 
     Ok(TestContainers { mailhog })
-}
-
-/// Setup PostgreSQL container with proper wait conditions
-async fn setup_postgres_container() -> anyhow::Result<ContainerAsync<GenericImage>> {
-    let container = GenericImage::new("yobasystems/alpine-postgres", "latest")
-        .with_exposed_port(POSTGRES_PORT.tcp())
-        .with_env_var("POSTGRES_DB", "familycloud")
-        .with_env_var("POSTGRES_USER", get_db_user())
-        .with_env_var("POSTGRES_PASSWORD", get_db_password().expose_secret())
-        .with_cmd(vec![
-            "postgres",
-            "-c",
-            "fsync=off",
-            "-c",
-            "synchronous_commit=off",
-            "-c",
-            "full_page_writes=off",
-        ])
-        .with_startup_timeout(Duration::from_secs(60 * 10))
-        .start()
-        .await?;
-
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(POSTGRES_PORT).await?;
-
-    let db_url = format!(
-        "postgresql://{}:{}@{}:{}/familycloud",
-        get_db_user(),
-        get_db_password().expose_secret(),
-        host,
-        port
-    );
-    wait_for_postgres(&db_url).await?;
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&db_url)
-        .await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    assert!(container.is_running().await?);
-    Ok(container)
-}
-
-/// Setup Redis container
-async fn setup_redis_container() -> anyhow::Result<ContainerAsync<GenericImage>> {
-    let container = GenericImage::new("yobasystems/alpine-redis", "latest")
-        .with_exposed_port(REDIS_PORT.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
-        .with_startup_timeout(Duration::from_secs(60 * 10))
-        .start()
-        .await?;
-
-    assert!(container.is_running().await?);
-    Ok(container)
 }
 
 /// Setup MailHog container for email testing
@@ -182,16 +120,4 @@ pub async fn wait_for_container(host: &str, port: u16) -> anyhow::Result<()> {
         sleep(Duration::from_millis(100)).await;
     }
     Ok(())
-}
-
-pub async fn wait_for_postgres(db_url: &str) -> anyhow::Result<()> {
-    loop {
-        if let Ok(pool) = PgPool::connect(db_url).await
-            && sqlx::query("SELECT 1").execute(&pool).await.is_ok()
-        {
-            return Ok(());
-        }
-
-        sleep(Duration::from_millis(100)).await;
-    }
 }
