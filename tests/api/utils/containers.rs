@@ -17,7 +17,6 @@ use tokio::time::sleep;
 /// Manages all test infrastructure containers
 #[derive(Debug)]
 pub struct TestContainers {
-    pub postgres: ContainerAsync<GenericImage>,
     pub redis: ContainerAsync<GenericImage>,
     pub mailhog: ContainerAsync<GenericImage>,
 }
@@ -25,7 +24,6 @@ pub struct TestContainers {
 impl TestContainers {
     /// Stop all containers gracefully
     pub async fn stop(self) -> anyhow::Result<()> {
-        self.postgres.stop().await?;
         self.redis.stop().await?;
         self.mailhog.stop().await?;
         Ok(())
@@ -39,13 +37,12 @@ const POSTGRES_PORT: u16 = 5432;
 
 /// Initialize all test containers
 pub async fn init_test_containers() -> anyhow::Result<TestContainers> {
-    let (postgres, redis, mailhog) = tokio::join!(
-        setup_postgres_container(), // uses WaitFor::message_on_stdout or list_port
-        setup_redis_container(),    // WaitFor::listening_port
-        setup_mailhog_container()   // WaitFor::listening_port
+    let (redis, mailhog) = tokio::join!(
+        // setup_postgres_container(), // uses WaitFor::message_on_stdout or list_port
+        setup_redis_container(),   // WaitFor::listening_port
+        setup_mailhog_container()  // WaitFor::listening_port
     );
     Ok(TestContainers {
-        postgres: postgres?,
         redis: redis?,
         mailhog: mailhog?,
     })
@@ -120,12 +117,7 @@ async fn setup_mailhog_container() -> anyhow::Result<ContainerAsync<GenericImage
 }
 
 /// Get database configuration from container or env
-pub async fn get_database_config(
-    postgres: &ContainerAsync<GenericImage>,
-) -> anyhow::Result<DatabaseConfig> {
-    let host = postgres.get_host().await?;
-    let port = postgres.get_host_port_ipv4(POSTGRES_PORT).await?;
-
+pub async fn get_database_config(host: &str, port: u16) -> anyhow::Result<DatabaseConfig> {
     Ok(DatabaseConfig {
         host: host.to_string(),
         port,
@@ -181,14 +173,12 @@ pub fn get_rustfs_config() -> RustfsConfig {
 
 /// Helper: Get database user from env or default
 fn get_db_user() -> String {
-    env::var("TEST_DB_USER").unwrap_or("testuser".into())
+    env::var("DB_USER").unwrap_or("testuser".into())
 }
 
 /// Helper: Get database password from env or default
 fn get_db_password() -> SecretString {
-    env::var("TEST_DB_PASSWORD")
-        .unwrap_or("testpass".into())
-        .into()
+    env::var("DB_PASSWORD").unwrap_or("testpass".into()).into()
 }
 
 use tokio::net::TcpStream;

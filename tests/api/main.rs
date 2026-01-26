@@ -15,9 +15,10 @@ mod refresh;
 
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
+    dotenv::dotenv()?;
     let containers = init_test_containers().await?;
 
-    let db_config = get_database_config(&containers.postgres).await?;
+    let db_config = get_database_config("localhost", 5432).await?;
     let redis_config = get_redis_config(&containers.redis).await?;
     let email_config = get_email_config(&containers.mailhog).await?;
     let rustfs_config = get_rustfs_config();
