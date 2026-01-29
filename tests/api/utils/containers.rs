@@ -56,7 +56,7 @@ pub async fn get_database_config(host: &str, port: u16) -> anyhow::Result<Databa
         port,
         user_name: get_db_user(),
         password: get_db_password(),
-        name: "familycloud".into(),
+        db_name: "familycloud".into(),
     })
 }
 

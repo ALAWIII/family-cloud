@@ -1,5 +1,6 @@
 mod signup;
 mod utils;
+use family_cloud::init_tracing;
 pub use utils::*;
 mod change_email;
 mod login;
@@ -16,6 +17,7 @@ mod refresh;
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
+
     let containers = init_test_containers().await?;
 
     let db_config = get_database_config("localhost", 5432).await?;
@@ -37,8 +39,11 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
     let state = family_cloud::AppState {
         settings: family_cloud::AppSettings {
             app: family_cloud::AppConfig {
+                name: "familycloud".into(),
                 host: "localhost".into(),
                 port: 5050,
+                log_level: family_cloud::LogLevel::Debug,
+                log_directory: "./family_cloud".into(),
             },
             database: db_config,
             email: email_config,
@@ -51,6 +56,11 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
         redis_pool: family_cloud::get_redis_pool()?,
         mail_client: family_cloud::get_mail_client()?,
     };
+    init_tracing(
+        &state.settings.app.name,
+        &state.settings.app.tracing_settings(),
+        &state.settings.app.log_directory,
+    )?;
 
     let app_test = AppTest::new(
         family_cloud::build_router(state.clone())?,

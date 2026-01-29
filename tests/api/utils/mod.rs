@@ -8,7 +8,6 @@
 //! - Common test patterns
 pub mod containers;
 pub use containers::*;
-
 pub mod app_test;
 pub mod db;
 pub mod email;
