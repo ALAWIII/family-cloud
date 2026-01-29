@@ -110,7 +110,7 @@ impl PendingAccount {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct SignupRequest {
     pub username: String,
     pub email: String,

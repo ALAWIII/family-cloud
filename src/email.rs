@@ -1,6 +1,7 @@
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
 };
+use tracing::{debug, error, instrument};
 
 use std::sync::OnceLock;
 
@@ -38,46 +39,70 @@ impl EmailSender {
         self.msg_id = Some(msg_id);
         self
     }
-
+    #[instrument(skip_all, fields(
+        email_sender=self.from_sender,
+        user_email=self.email_recipient,
+        subject=self.subject,
+    ))]
     pub async fn send_email(
         self,
         client: AsyncSmtpTransport<Tokio1Executor>,
     ) -> Result<(), EmailError> {
+        debug!("sending email message");
         let msg = Message::builder()
             .message_id(self.msg_id)
             .from(
                 self.from_sender
                     .parse()
+                    .inspect_err(|e| error!("failed to parse email sender: {}", e))
                     .map_err(EmailError::InvalidAddress)?,
             )
             .to(self
                 .email_recipient
                 .parse()
+                .inspect_err(|e| error!("failed to parse user recipient email: {}", e))
                 .map_err(EmailError::InvalidAddress)?)
             .subject(self.subject)
             .header(ContentType::TEXT_HTML)
             .body(self.email_body.to_string())
+            .inspect_err(|e| error!("failed to build the email message: {}", e))
             .map_err(EmailError::MessageBuilder)?;
 
-        client.send(msg).await.map_err(EmailError::Transport)?;
+        client
+            .send(msg)
+            .await
+            .map_err(EmailError::Transport)
+            .inspect_err(|e| error!("failed to send the email message: {}", e))?;
+        debug!("configuring the mail client successfully");
         Ok(())
     }
 }
 
 /// used to establish connection to the Email server and register the app as a viable client that will use the SMTP server to send emails.
-pub fn init_mail_client(smtp_url: &EmailConfig) -> Result<(), EmailError> {
-    let mail = AsyncSmtpTransport::<Tokio1Executor>::from_url(&smtp_url.url())
+#[instrument(skip_all,fields(name = email_cfg.username,
+    host=email_cfg.host,
+    port=email_cfg.port,
+    protocol=email_cfg.protocol,
+    email_sender=email_cfg.from_sender,
+    tls_param=email_cfg.tls_param
+))]
+pub fn init_mail_client(email_cfg: &EmailConfig) -> Result<(), EmailError> {
+    debug!("Initalizing the mail client.");
+    let mail = AsyncSmtpTransport::<Tokio1Executor>::from_url(&email_cfg.url())
+        .inspect_err(|e| error!("failed to initalize mail client: {}", e))
         .map_err(EmailError::Transport)?
         .build();
     MAIL_CLIENT
         .set(mail)
         .map_err(|_| EmailError::ClientAlreadyInitialized)
+        .inspect_err(|e| error!("failed to set the mail client again: {}", e))
 }
-
 pub fn get_mail_client() -> Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+    debug!("getting a mail client reference");
     Ok(MAIL_CLIENT
         .get()
-        .ok_or(EmailError::ClientNotInitialized)?
+        .ok_or(EmailError::ClientNotInitialized)
+        .inspect_err(|e| error!("failed to get a clone of the mail client: {}", e))?
         .clone())
 }
 

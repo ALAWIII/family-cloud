@@ -14,10 +14,10 @@ pub enum DatabaseError {
 
     // -------- Domain-level (safe to bubble up) --------
     /// Used internally; API should normalize response
-    #[error("Entity not found")]
+    #[error("Database entity,user or email not found")]
     NotFound,
 
     /// Unique constraint violation
-    #[error("Duplicate entry")]
+    #[error("Database duplicate entry,account or email")]
     Duplicate,
 }

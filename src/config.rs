@@ -1,8 +1,40 @@
+use std::fmt::Display;
+
+use crate::ApiError;
 use config::{Config as ConfigBuilder, File};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::ApiError;
+#[derive(Debug, Clone)]
+pub enum LogLevel {
+    /// Highest level → TRACE + DEBUG + INFO + WARN + ERROR
+    Trace,
+    /// → DEBUG + INFO + WARN + ERROR
+    Debug,
+    /// → INFO + WARN + ERROR
+    Info,
+    /// → WARN + ERROR
+    Warn,
+    /// → ERROR only
+    Error,
+}
+
+impl<'de> Deserialize<'de> for LogLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "trace" => Ok(LogLevel::Trace),
+            "debug" => Ok(LogLevel::Debug),
+            "info" => Ok(LogLevel::Info),
+            "warn" | "warning" => Ok(LogLevel::Warn),
+            "error" => Ok(LogLevel::Error),
+            _ => Err(serde::de::Error::custom("invalid log level")),
+        }
+    }
+}
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppSettings {
     pub app: AppConfig,
@@ -15,13 +47,16 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
+    pub name: String,
     pub host: String,
     pub port: u16,
+    pub log_level: LogLevel,
+    pub log_directory: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
-    pub name: String,
+    pub db_name: String,
     pub host: String,
     pub port: u16,
     pub user_name: String,
@@ -60,7 +95,25 @@ pub struct RedisConfig {
 
 impl AppConfig {
     pub fn url(&self) -> String {
-        format!("http://{}:{}", self.host, self.port)
+        format!("{}:{}", self.host, self.port)
+    }
+    pub fn tracing_settings(&self) -> String {
+        format!("family_cloud={},warn", self.log_level)
+    }
+}
+impl Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Trace => "trace",
+                Self::Debug => "debug",
+                Self::Info => "info",
+                Self::Warn => "warn",
+                _ => "error",
+            }
+        )
     }
 }
 
@@ -72,7 +125,7 @@ impl DatabaseConfig {
             self.password.expose_secret(),
             self.host,
             self.port,
-            self.name
+            self.db_name
         )
     }
 }

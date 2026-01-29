@@ -3,7 +3,7 @@ use secrecy::ExposeSecret;
 
 use crate::{
     ApiError, AppState, Credentials, LoginResponse, UserProfile, UserTokenPayload,
-    create_access_token, create_verification_key, encode_token, fetch_account_info,
+    create_jwt_access_token, create_verification_key, encode_token, fetch_account_info,
     generate_token_bytes, get_redis_con, hash_token, serialize_content, store_token_redis,
     verify_password,
 };
@@ -29,7 +29,7 @@ pub(super) async fn login(
     let ser_refresh_payload = serialize_content(&refresh_payload)?;
     //-------------------------- generate access token---------------
 
-    let access_token = create_access_token(&refresh_payload, 60 * 15, secret)?;
+    let access_token = create_jwt_access_token(&refresh_payload, 60 * 15, secret)?;
     store_token_redis(
         &mut redis_con,
         &key,

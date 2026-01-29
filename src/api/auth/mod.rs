@@ -18,14 +18,14 @@ use axum::{
 mod pswd_reset;
 pub use pswd_reset::*;
 mod email_change;
-use crate::{AppState, auth_middleware};
+use crate::{AppState, validate_jwt_access_token};
 pub use email_change::*;
 
 pub fn change_email_router(hmac: SecretString) -> Router<AppState> {
     Router::new()
         // body contains { access_token , new_email }
         .route("/api/auth/change-email", post(change_email))
-        .layer(from_fn_with_state(hmac, auth_middleware))
+        .layer(from_fn_with_state(hmac, validate_jwt_access_token))
         //the url must contain the verification token to be verified and accept new email then deleted from redis
         .route("/api/auth/change-email/verify", get(verify_change_email))
         //the url must contain the verification token to be deleted/revoked from redis
@@ -50,7 +50,7 @@ pub fn pswd_router() -> Router<AppState> {
 
 pub fn authentication() -> Router<AppState> {
     Router::new()
-        .route("/api/auth/signup", post(signup).get(verify_signup_token))
+        .route("/api/auth/signup", post(signup).get(verify_signup))
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/refresh", post(refresh_token))

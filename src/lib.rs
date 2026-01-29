@@ -1,3 +1,5 @@
+mod telemetry;
+pub use telemetry::*;
 mod startup;
 pub use startup::*;
 mod database;
