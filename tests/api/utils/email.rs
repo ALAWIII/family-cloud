@@ -3,6 +3,7 @@
 use family_cloud::TokenType;
 use scraper::{Html, Selector};
 use serde_json::Value;
+use url::Url;
 
 /// Extracts tokens from email messages for verification flows
 pub struct EmailTokenExtractor;
@@ -34,19 +35,20 @@ impl EmailTokenExtractor {
         let document = Html::parse_document(&decoded);
         let selector = Selector::parse(r#"a[id="verify-button"]"#).ok()?;
 
-        document
-            .select(&selector)
-            .next()?
-            .value()
-            .attr("href")?
-            .split("token=")
-            .nth(1)
-            .map(|s| s.to_string())
+        let href = document.select(&selector).next()?.value().attr("href")?;
+
+        let parsed_url = Url::parse(href).ok()?;
+        parsed_url
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.to_string())
     }
 
     /// Decode quoted-printable email encoding
     fn decode_quoted_printable(body: &str) -> String {
-        body.replace("=3D", "=").replace("=\n", "")
+        body.replace("=3D", "=")
+            .replace("=\n", "")
+            .replace("=\r\n", "")
     }
 
     /// Convert raw tokens to hashed tokens

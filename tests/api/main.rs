@@ -17,6 +17,7 @@ mod refresh;
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
+    init_tracing("familycloud", "info", "./family_cloud")?;
 
     let containers = init_test_containers().await?;
 
@@ -42,7 +43,7 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
                 name: "familycloud".into(),
                 host: "localhost".into(),
                 port: 5050,
-                log_level: family_cloud::LogLevel::Debug,
+                log_level: family_cloud::LogLevel::Info,
                 log_directory: "./family_cloud".into(),
             },
             database: db_config,
@@ -56,11 +57,6 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
         redis_pool: family_cloud::get_redis_pool()?,
         mail_client: family_cloud::get_mail_client()?,
     };
-    init_tracing(
-        &state.settings.app.name,
-        &state.settings.app.tracing_settings(),
-        &state.settings.app.log_directory,
-    )?;
 
     let app_test = AppTest::new(
         family_cloud::build_router(state.clone())?,
