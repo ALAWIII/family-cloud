@@ -14,12 +14,12 @@ use secrecy::ExposeSecret;
 use tracing::{info, instrument};
 
 /// if the email is new and not already used !
-fn create_account(signup_info: &SignupRequest) -> Result<PendingAccount, CryptoError> {
+fn create_pending_account(signup_info: &SignupRequest) -> Result<PendingAccount, CryptoError> {
     info!("creating new pending account");
     let hashed_psswd = hash_password(&signup_info.password)?;
     let pending_account =
         PendingAccount::new(&signup_info.username, &signup_info.email, hashed_psswd);
-    info!("account created successfully.");
+    info!("new pending account created successfully.");
     Ok(pending_account)
 }
 
@@ -53,7 +53,7 @@ pub(super) async fn signup(
     let token = generate_token_bytes(32)?;
     let raw_token = encode_token(&token); // used to send as a url in email message
     let hashed_token = hash_token(&token, secret)?; // store in redis database
-    let pending_account = create_account(&signup_info)?;
+    let pending_account = create_pending_account(&signup_info)?;
 
     info!("creating the signup verification body for email message");
 

@@ -15,7 +15,7 @@ use hmac::{Hmac, Mac};
 use rand::{TryRngCore, rngs::OsRng as RandOsRng};
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
-use tracing::{Level, debug, error, info, instrument, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{ApiError, Claims, CryptoError, TokenPayload, TokenType, UserTokenPayload};
 type HmacSha256 = Hmac<Sha256>;

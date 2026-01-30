@@ -27,6 +27,7 @@ pub async fn validate_jwt_access_token(
         .map(|v| v.trim())
         .ok_or(StatusCode::UNAUTHORIZED)
         .inspect_err(|e| error!("failed to extract the access token: {}", e))?;
+    debug!("validating jwt claims.");
     let claims = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.expose_secret().as_bytes()),
@@ -35,6 +36,8 @@ pub async fn validate_jwt_access_token(
     .inspect_err(|e| error!("error validating jwt access token: {}", e))
     .map_err(|_| StatusCode::UNAUTHORIZED)?
     .claims;
+    debug!("inserting claims as extension.");
     req.extensions_mut().insert(claims);
+    debug!("passing request to the handler.");
     Ok(next.run(req).await)
 }
