@@ -1,9 +1,9 @@
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::header::ContentType,
 };
-use tracing::{debug, error, instrument};
-
 use std::sync::OnceLock;
+use tracing::{debug, error, instrument};
+use uuid::Uuid;
 
 use crate::{EmailConfig, EmailError};
 
@@ -80,6 +80,7 @@ impl EmailSender {
 
 /// used to establish connection to the Email server and register the app as a viable client that will use the SMTP server to send emails.
 #[instrument(skip_all,fields(name = email_cfg.username,
+    init_id=%Uuid::new_v4(),
     host=email_cfg.host,
     port=email_cfg.port,
     protocol=email_cfg.protocol,

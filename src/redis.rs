@@ -1,13 +1,17 @@
 use std::sync::OnceLock;
 
+use crate::{CRedisError, RedisConfig};
 use deadpool_redis::{Config, Connection, Pool as RPool, Runtime, redis::AsyncTypedCommands};
 use tracing::{debug, error, instrument};
-
-use crate::{CRedisError, RedisConfig};
+use uuid::Uuid;
 
 static REDIS_POOL: OnceLock<RPool> = OnceLock::new();
 
-#[instrument(skip_all,fields(redis_host = %rds_conf.host, redis_port = rds_conf.port))]
+#[instrument(skip_all,fields(
+    init_id=%Uuid::new_v4(),
+    redis_host = %rds_conf.host,
+    redis_port = rds_conf.port
+))]
 pub async fn init_redis_pool(rds_conf: &RedisConfig) -> Result<(), CRedisError> {
     debug!("Initializing Redis pool");
     let cfg = Config::from_url(rds_conf.url());

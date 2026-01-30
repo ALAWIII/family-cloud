@@ -9,10 +9,11 @@ use crate::{DatabaseConfig, DatabaseError, User};
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
 #[instrument(skip_all,ret(level=Level::DEBUG),fields(
+    init_id=%Uuid::new_v4(),
     db_name=db.db_name,
     host=db.host,
     port=db.port,
-    user_name=db.user_name
+    user_name=db.user_name,
 ))]
 pub async fn init_db(db: &DatabaseConfig) -> Result<(), DatabaseError> {
     debug!("configuring and initializing the database.");
