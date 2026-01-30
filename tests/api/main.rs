@@ -17,7 +17,7 @@ mod refresh;
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
-    init_tracing("familycloud", "info", "./family_cloud")?;
+    init_tracing("familycloud", "family_cloud=info,warn", "./family_cloud")?;
 
     let containers = init_test_containers().await?;
 

@@ -1754,6 +1754,7 @@ dependencies = [
  "tracing-bunyan-formatter",
  "tracing-log 0.2.0",
  "tracing-subscriber",
+ "url",
  "urlencoding",
  "uuid",
 ]
