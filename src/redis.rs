@@ -39,7 +39,7 @@ pub fn get_redis_pool() -> Result<RPool, CRedisError> {
         .inspect_err(|e| error!("failed to get redis pool: {}", e))
         .cloned()
 }
-pub async fn get_redis_con(pool: RPool) -> Result<Connection, CRedisError> {
+pub async fn get_redis_con(pool: &RPool) -> Result<Connection, CRedisError> {
     debug!("Acquiring Redis connection from pool");
     Ok(pool
         .get()
@@ -72,13 +72,13 @@ pub async fn is_token_exist(con: &mut Connection, hashed_token: &str) -> Result<
 }
 
 /// Retrieves verification data for token from Redis
-pub async fn get_verification_data(
+pub async fn fetch_redis_data(
     con: &mut Connection,
-    hashed_token: &str,
+    key_token: &str,
 ) -> Result<Option<String>, CRedisError> {
     debug!("Retrieving verification data from Redis");
     Ok(con
-        .get(hashed_token)
+        .get(key_token)
         .await
         .inspect_err(|e| error!("Failed to retrieve verification data: {}", e))?)
 }
@@ -92,5 +92,15 @@ pub async fn delete_token_from_redis(
         .await
         .inspect_err(|e| error!("Failed to delete token from Redis: {}", e))?;
 
+    Ok(())
+}
+
+/// on success,failure or user disconnection always delete the token from the hset , so that decrementing the counter of allowed concurrent user.
+pub async fn decrement_concurrent_download(
+    redis_con: &mut Connection,
+    token: &str,
+    user_key: &str,
+) -> Result<(), CRedisError> {
+    redis_con.hdel(user_key, token).await?;
     Ok(())
 }
