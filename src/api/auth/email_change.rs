@@ -8,10 +8,10 @@ use tracing::{error, info, instrument};
 
 use crate::{
     ApiError, AppState, Claims, DatabaseError, EmailInput, EmailSender, TokenPayload,
-    UserVerification, create_verification_key, decode_token, delete_token_from_redis,
-    deserialize_content, email_cancel_body, email_change_body, encode_token, fetch_email_by_id,
-    generate_token_bytes, get_redis_con, get_verification_data, hash_token, is_account_exist,
-    is_token_exist, serialize_content, store_token_redis, update_account_email,
+    UserVerification, create_redis_key, decode_token, delete_token_from_redis, deserialize_content,
+    email_cancel_body, email_change_body, encode_token, fetch_email_by_id, fetch_redis_data,
+    generate_token_bytes, get_redis_con, hash_token, is_account_exist, is_token_exist,
+    serialize_content, store_token_redis, update_account_email,
 };
 
 #[debug_handler]
@@ -44,14 +44,14 @@ pub async fn change_email(
     let token_bytes = generate_token_bytes(32)?;
     let raw_token = encode_token(&token_bytes);
     let token_hash = hash_token(&token_bytes, secret.expose_secret())?;
-    let key = create_verification_key(crate::TokenType::EmailChange, &token_hash);
+    let key = create_redis_key(crate::TokenType::EmailChange, &token_hash);
     //-------------
     info!("creating new user verification info from claims.");
     let content = UserVerification::new(claims.sub, &claims.username, &email_info.email);
     let scontent = serialize_content(&content)?;
     //--------------------storing token in redis ------------------
     info!("storing change email verification token in redis.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
     store_token_redis(&mut redis_con, &key, &scontent, 10 * 60).await?;
     //-------------------------------- sending email change verification to the new email ---------
     info!("sending email verification message to the new email address.");
@@ -104,11 +104,11 @@ pub async fn verify_change_email(
     info!("decoding,hashing and creating key from a raw token.");
     let token_bytes = decode_token(raw_token.token.expose_secret())?;
     let hashed_token = hash_token(&token_bytes, secret)?;
-    let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
+    let key = create_redis_key(crate::TokenType::EmailChange, &hashed_token);
 
     info!("fetching associated info from redis using the hashed token.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
-    let data = get_verification_data(&mut redis_con, &key)
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    let data = fetch_redis_data(&mut redis_con, &key)
         .await?
         .ok_or_else(|| {
             error!("failed to retreive change email verification information from redis.");
@@ -141,10 +141,10 @@ pub async fn cancel_change_email(
     info!("decoding and hashing the change email cancel token.");
     let token_bytes = decode_token(raw_token.token.expose_secret())?;
     let hashed_token = hash_token(&token_bytes, secret)?;
-    let key = create_verification_key(crate::TokenType::EmailChange, &hashed_token);
+    let key = create_redis_key(crate::TokenType::EmailChange, &hashed_token);
 
     info!("asking if the change email cancel token still valid in redis.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
     let t = is_token_exist(&mut redis_con, &key).await?;
     if !t {
         error!("invalid cancel token.");

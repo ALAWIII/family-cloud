@@ -4,7 +4,7 @@ use tracing::{info, instrument};
 
 use crate::{
     ApiError, AppState, Credentials, LoginResponse, UserProfile, UserTokenPayload,
-    create_jwt_access_token, create_verification_key, encode_token, fetch_account_info,
+    create_jwt_access_token, create_redis_key, encode_token, fetch_account_info,
     generate_token_bytes, get_redis_con, hash_token, serialize_content, store_token_redis,
     verify_password,
 };
@@ -27,12 +27,12 @@ pub(super) async fn login(
     let token_bytes = generate_token_bytes(32)?;
     let refresh_token = encode_token(&token_bytes);
     let token_hash = hash_token(&token_bytes, secret.expose_secret())?;
-    let key = create_verification_key(crate::TokenType::Refresh, &token_hash);
+    let key = create_redis_key(crate::TokenType::Refresh, &token_hash);
     let refresh_payload = UserTokenPayload::new(user.id, &user.username);
     let ser_refresh_payload = serialize_content(&refresh_payload)?;
     //-------------------------- generate access token---------------
     info!("storing new refresh token with the associated user information.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
     store_token_redis(
         &mut redis_con,
         &key,

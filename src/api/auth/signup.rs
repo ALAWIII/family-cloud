@@ -1,7 +1,7 @@
 use crate::{
     ApiError, AppState, CryptoError, DatabaseError, EmailSender, PendingAccount, SignupRequest,
-    TokenPayload, User, create_verification_key, decode_token, delete_token_from_redis,
-    deserialize_content, encode_token, generate_token_bytes, get_redis_con, get_verification_data,
+    TokenPayload, User, create_redis_key, decode_token, delete_token_from_redis,
+    deserialize_content, encode_token, fetch_redis_data, generate_token_bytes, get_redis_con,
     hash_password, hash_token, insert_new_account, is_account_exist, serialize_content,
     store_token_redis, verification_body,
 };
@@ -65,11 +65,11 @@ pub(super) async fn signup(
     );
     //---------------------------------
     info!("storing the new signup email verfication token to redis.");
-    let mut con = get_redis_con(appstate.redis_pool).await?;
+    let mut con = get_redis_con(&appstate.redis_pool).await?;
     let content = serialize_content(&pending_account)?;
     store_token_redis(
         &mut con,
-        &create_verification_key(crate::TokenType::Signup, &hashed_token),
+        &create_redis_key(crate::TokenType::Signup, &hashed_token),
         &content,
         5 * 60,
     )
@@ -99,12 +99,12 @@ pub async fn verify_signup(
     info!("decoding the signup verification token");
     let decoded = decode_token(token.token.expose_secret())?;
     let hashed_token = hash_token(&decoded, secret)?;
-    let key = create_verification_key(crate::TokenType::Signup, &hashed_token);
+    let key = create_redis_key(crate::TokenType::Signup, &hashed_token);
     //-------------------------- search redis for the token
 
     info!("searching redis for the signup verification token and retrieving its content.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
-    let vdata = get_verification_data(&mut redis_con, &key)
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    let vdata = fetch_redis_data(&mut redis_con, &key)
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let account: PendingAccount = deserialize_content(&vdata)?;
