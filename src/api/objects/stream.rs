@@ -1,5 +1,10 @@
 use std::net::SocketAddr;
 
+use crate::{
+    ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, RustFSError, StreamQuery,
+    TokenType, create_redis_key, deserialize_content, fetch_redis_data, get_redis_con,
+};
+
 use async_zip::{Compression, ZipEntryBuilder, base::write::ZipFileWriter};
 use aws_sdk_s3::Client;
 use axum::{
@@ -8,21 +13,11 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use deadpool_redis::{
-    Connection,
-    redis::{self, AsyncTypedCommands},
-};
-use serde::Deserialize;
+use deadpool_redis::redis::{self, AsyncTypedCommands};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
-use tracing::{error, info, instrument};
-use uuid::Uuid;
-
-use crate::{
-    ApiError, AppState, CRedisError, DownloadTokenData, RustFSError, TokenType, create_redis_key,
-    decrement_concurrent_download, deserialize_content, fetch_redis_data, get_redis_con,
-};
+use tracing::{debug, error, info, instrument};
 
 /// # Streaming Supports :
 /// 1. individual files.
@@ -92,37 +87,34 @@ pub async fn stream(
         .query_async(&mut redis_con)
         .await
         .map_err(CRedisError::Connection)?;
-
+    debug!("Creating cleanup guard");
+    let c_guard = CleanupGuard::new(appstate.redis_pool.clone(), stream_info.token, user_d_key);
     //--------------------------------- streaming object -------------------
     let object_name = d_content.object_d.object_name();
-    if d_content.object_d.kind.is_folder() {
+    let mut response = if d_content.object_d.kind.is_folder() {
         // fetch all its name prefixes/postfixes .
         // loop over all those names and pipe them to a giant zip file.
         // success ? Ok(())
-        return stream_folder(
+        stream_folder(
             &appstate.rustfs_con,
             &d_content.object_d.user_id.to_string(),
             d_content.object_d.object_key.to_string(),
             &object_name,
         )
-        .await;
-    }
-    stream_file(
-        headers,
-        &appstate,
-        &d_content,
-        &object_name,
-        stream_info.download.unwrap_or(false),
-        stream_info.token,
-        &mut redis_con,
-    )
-    .await
-}
+        .await
+    } else {
+        stream_file(
+            headers,
+            &appstate,
+            &d_content,
+            &object_name,
+            stream_info.download.unwrap_or(false),
+        )
+        .await
+    }?;
 
-#[derive(Deserialize)]
-pub struct StreamQuery {
-    token: Uuid,
-    download: Option<bool>, // Add this!
+    response.extensions_mut().insert(c_guard);
+    Ok(response)
 }
 
 async fn stream_file(
@@ -131,8 +123,6 @@ async fn stream_file(
     d_content: &DownloadTokenData,
     f_name: &str,
     download: bool,
-    token: Uuid,
-    redis_con: &mut Connection,
 ) -> Result<Response, ApiError> {
     info!("start streaming the individual file.");
     let range = headers
@@ -155,7 +145,7 @@ async fn stream_file(
     let obj_res = obj_req
         .send()
         .await
-        .map_err(|e| RustFSError::S3(Box::new(e.to_string())))?; // send the request to RustFS
+        .map_err(|e| RustFSError::S3(e.into()))?; // send the request to RustFS
     let stored_etag = obj_res.e_tag();
     if let Some(s_etag) = stored_etag
         && s_etag != d_content.object_d.etag
@@ -163,9 +153,6 @@ async fn stream_file(
         info!(
             "etag of an object has changed, decrementing number of concurrent downloads for user...."
         );
-        let user_key =
-            create_redis_key(TokenType::Download, &d_content.object_d.user_id.to_string());
-        decrement_concurrent_download(redis_con, &token.to_string(), &user_key).await?;
         // the file has changed !!! start streaming from zero and ignore Range header , or just revoke the token from redis
         return Err(ApiError::RustFs(RustFSError::ETagChanged));
     }
@@ -222,7 +209,7 @@ async fn stream_folder(
         .prefix(&object_key)
         .send()
         .await
-        .map_err(|e| RustFSError::S3(Box::from(e.to_string())))?;
+        .map_err(|e| RustFSError::S3(e.into()))?;
     // convert them into a list of objects and filter out the empty folders!
     let objects = name_list
         .contents()
@@ -232,7 +219,7 @@ async fn stream_folder(
         .collect::<Vec<_>>();
 
     if objects.is_empty() {
-        let errora = RustFSError::S3(Box::from("folder is empty, nothing to stream.".to_string()));
+        let errora = RustFSError::EmptyFolder;
         return Err(ApiError::RustFs(errora));
         // nothing to stream !!
     }
@@ -241,7 +228,7 @@ async fn stream_folder(
     let client = rustfs_con.clone();
     let bucket = bucket_name.to_string();
 
-    let b = tokio::spawn(async move {
+    tokio::spawn(async move {
         info!("start compressing arrived chunks of files from RustFS.");
         let e = create_zip(client, bucket, objects, writer)
             .await
