@@ -4,7 +4,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
 use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
-use crate::{DatabaseConfig, DatabaseError, User};
+use crate::{DatabaseConfig, DatabaseError, ObjectDownload, User};
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
@@ -150,4 +150,33 @@ pub async fn update_account_password(
     .execute(con)
     .await
     .inspect_err(|e| error!("database error: {}", e))?)
+}
+
+//------------------------------------------ database object download endpoint fetch ----------------------
+// FIX: Tell sqlx to treat this column as your Rust type 'ObjectStatus'
+pub async fn fetch_object_info(
+    con: &PgPool,
+    file_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<ObjectDownload>, DatabaseError> {
+    Ok(sqlx::query_as!(
+        ObjectDownload,
+        r#"
+        SELECT
+            id,
+            user_id,
+            object_key,
+            object_kind as "kind:_",
+            etag,
+            status as "status:_",
+            size,
+            checksum_sha256
+        FROM objects
+        WHERE id = $1 and user_id=$2 and status='active'
+        "#,
+        file_id,
+        user_id,
+    )
+    .fetch_optional(con)
+    .await?)
 }
