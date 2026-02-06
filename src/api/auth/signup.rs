@@ -1,9 +1,9 @@
 use crate::{
     ApiError, AppState, CryptoError, DatabaseError, EmailSender, PendingAccount, SignupRequest,
-    TokenPayload, User, create_redis_key, decode_token, delete_token_from_redis,
-    deserialize_content, encode_token, fetch_redis_data, generate_token_bytes, get_redis_con,
-    hash_password, hash_token, insert_new_account, is_account_exist, serialize_content,
-    store_token_redis, verification_body,
+    TokenPayload, User, create_redis_key, create_user_bucket, decode_token,
+    delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
+    generate_token_bytes, get_redis_con, hash_password, hash_token, insert_new_account,
+    is_account_exist, serialize_content, store_token_redis, verification_body,
 };
 use axum::{
     Json, debug_handler,
@@ -111,13 +111,13 @@ pub async fn verify_signup(
 
     info!("initalizing new User account instance and storing it into Postgres database.");
     let user = User::new(account.username, account.email, account.password_hash);
-    insert_new_account(user, &appstate.db_pool)
+    insert_new_account(&user, &appstate.db_pool)
         .await
         .map_err(|e| match e {
             DatabaseError::Duplicate => ApiError::Conflict, // Edge case
             other => ApiError::Database(other),
         })?;
-
+    create_user_bucket(&appstate.rustfs_con, &user.id.to_string()).await?;
     info!("deleting or invalidating the signup verification token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
     info!("successfully verifing new account signup.");
