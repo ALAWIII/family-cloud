@@ -1,7 +1,10 @@
+use std::ffi::OsStr;
+use std::path::Path;
 use std::{fmt::Display, str::FromStr};
 
+use chrono::DateTime;
 use chrono::{NaiveDateTime, Utc};
-use secrecy::{ExposeSecret, SecretBox};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
 use sqlx::prelude::FromRow;
 use uuid::Uuid;
@@ -127,9 +130,9 @@ pub struct Credentials {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TokenPayload {
     #[serde(serialize_with = "serialize_token")]
-    pub token: SecretBox<String>,
+    pub token: SecretString,
 }
-fn serialize_token<S>(token: &SecretBox<String>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_token<S>(token: &SecretString, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -141,6 +144,7 @@ pub enum TokenType {
     PasswordReset,
     EmailChange,
     Refresh,
+    Download,
     Access,
 }
 impl Display for TokenType {
@@ -154,6 +158,7 @@ impl Display for TokenType {
                 Self::PasswordReset => "password_reset",
                 Self::Refresh => "refresh",
                 Self::Access => "access",
+                Self::Download => "download",
             }
         )
     }
@@ -193,5 +198,85 @@ impl UserTokenPayload {
             id,
             username: username.into(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectRecord {
+    // ===== Identity (DB authority) =====
+    pub id: Uuid,           // internal unique file_id
+    pub user_id: Uuid,      // == bucket_name == bucket_id
+    pub object_key: String, // actual key in RustFS (e.g. "/shawarma/potato.txt")
+
+    // ===== RustFS technical metadata =====
+    pub size: i64,                    // content_length
+    pub etag: String,                 // e_tag
+    pub mime_type: Option<String>,    // content_type (nullable)
+    pub last_modified: DateTime<Utc>, // from RustFS
+
+    // ===== System / business metadata =====
+    pub created_at: DateTime<Utc>, // DB timestamp
+    pub visibility: Visibility,    // public / private
+    pub status: ObjectStatus,      // active / deleted / archived
+
+    // ===== Optional / advanced =====
+    pub checksum_sha256: String,
+    pub custom_metadata: Option<serde_json::Value>, // copy of RustFS metadata
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "object_status")]
+#[sqlx(rename_all = "lowercase")]
+pub enum ObjectStatus {
+    Active,
+    Deleted,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct ObjectDownload {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub kind: ObjectKind,
+    pub object_key: String,
+    pub status: ObjectStatus,
+    pub size: i64,
+    pub etag: String,
+    pub checksum_sha256: String,
+}
+impl ObjectDownload {
+    pub fn object_name(&self) -> String {
+        let path = Path::new(&self.object_key);
+        path.file_name()
+            .unwrap_or(OsStr::new("download"))
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DownloadTokenData {
+    #[serde(flatten)]
+    pub object_d: ObjectDownload,
+    pub ip_address: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "object_kind_type", rename_all = "PascalCase")]
+pub enum ObjectKind {
+    File,
+    Folder,
+}
+
+impl ObjectKind {
+    pub fn is_folder(&self) -> bool {
+        if let Self::Folder = self {
+            return true;
+        }
+        false
     }
 }
