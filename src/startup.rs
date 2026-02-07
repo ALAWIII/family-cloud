@@ -19,7 +19,7 @@ pub fn setup_app() -> Result<AppState, ApiError> {
     Ok(AppState {
         settings,
         db_pool: get_db()?,
-        rustfs_con: get_rustfs(),
+        rustfs_con: get_rustfs()?,
         redis_pool: get_redis_pool()?,
         mail_client: get_mail_client()?,
     })
@@ -56,7 +56,7 @@ pub async fn run() -> anyhow::Result<()> {
     )?;
     init_mail_client(&state.settings.email)?;
     init_redis_pool(&state.settings.redis).await?;
-    init_rustfs(&state.settings.rustfs, &state.settings.secrets.rustfs).await;
+    init_rustfs(&state.settings.rustfs, &state.settings.secrets.rustfs).await?;
     init_db(&state.settings.database).await?;
     start_app_server(state).await?;
     Ok(())

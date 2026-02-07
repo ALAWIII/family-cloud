@@ -201,6 +201,7 @@ pub async fn create_user_bucket(rfs_client: &Client, user_id: &str) -> Result<()
         .bucket(user_id)
         .send()
         .await
-        .map_err(|e| RustFSError::BucketCreate(e.into()))?;
+        .map_err(|e| RustFSError::BucketCreate(e.into()))
+        .inspect_err(|e| error!("{}", e))?;
     Ok(())
 }
