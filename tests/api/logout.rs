@@ -9,7 +9,7 @@
 
 use deadpool_redis::redis::AsyncTypedCommands;
 use family_cloud::{
-    LoginResponse, TokenType, create_verification_key, decode_token, get_redis_con, hash_token,
+    LoginResponse, TokenType, create_redis_key, decode_token, get_redis_con, hash_token,
 };
 use reqwest::StatusCode;
 use secrecy::ExposeSecret;
@@ -47,7 +47,7 @@ async fn setup_with_authenticated_user()
         &decode_token(&login_data.refresh_token)?,
         app.state.settings.secrets.hmac.expose_secret(),
     )?;
-    let redis_key = create_verification_key(TokenType::Refresh, &hashed_token);
+    let redis_key = create_redis_key(TokenType::Refresh, &hashed_token);
 
     Ok((app, state, login_data, redis_key))
 }
@@ -61,7 +61,7 @@ async fn test_logout_with_token_in_cookie() -> anyhow::Result<()> {
     let (app, state, login_data, redis_key) = setup_with_authenticated_user().await?;
 
     // Get Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify token EXISTS in Redis BEFORE logout
     let token_exists_before = redis_conn.exists(&redis_key).await?;
@@ -98,7 +98,7 @@ async fn test_logout_with_token_in_body() -> anyhow::Result<()> {
     let (app, state, login_data, redis_key) = setup_with_authenticated_user().await?;
 
     // Get Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify token EXISTS in Redis BEFORE logout
     let token_exists_before = redis_conn.exists(&redis_key).await?;

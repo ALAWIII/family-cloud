@@ -32,7 +32,7 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
     family_cloud::init_db(&db_config).await?;
     family_cloud::init_mail_client(&email_config)?;
     family_cloud::init_redis_pool(&redis_config).await?;
-    family_cloud::init_rustfs(&rustfs_config, &secrets.rustfs).await;
+    family_cloud::init_rustfs(&rustfs_config, &secrets.rustfs).await?;
 
     let db_pool = family_cloud::get_db()?;
     let mailhog_url = std::env::var("MAILHOG_URL")?;
@@ -53,7 +53,7 @@ pub async fn setup_test_env() -> anyhow::Result<(AppTest, family_cloud::AppState
             redis: redis_config,
         },
         db_pool,
-        rustfs_con: family_cloud::get_rustfs(),
+        rustfs_con: family_cloud::get_rustfs()?,
         redis_pool: family_cloud::get_redis_pool()?,
         mail_client: family_cloud::get_mail_client()?,
     };

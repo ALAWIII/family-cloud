@@ -104,7 +104,7 @@ async fn test_password_reset_token_stored_in_redis() -> anyhow::Result<()> {
     let (_raw_tokens, hashed_tokens) = request_reset_and_get_tokens(&app, &account.email).await?;
 
     // Get Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify tokens exist in Redis
     for hashed_token in &hashed_tokens {
@@ -206,7 +206,7 @@ async fn test_password_reset_removes_token_from_redis() -> anyhow::Result<()> {
     let (raw_tokens, hashed_tokens) = request_reset_and_get_tokens(&app, &account.email).await?;
 
     // Verify tokens EXIST before confirmation
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
     for hashed_token in &hashed_tokens {
         let exists = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
@@ -222,7 +222,7 @@ async fn test_password_reset_removes_token_from_redis() -> anyhow::Result<()> {
     }
 
     // Get fresh Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify tokens REMOVED after confirmation
     for hashed_token in &hashed_tokens {

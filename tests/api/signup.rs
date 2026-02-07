@@ -60,7 +60,7 @@ async fn signup_and_get_tokens(
 /// Verify email by clicking token link
 async fn verify_email_with_token(app: &AppTest, token: &str) -> bool {
     let response = app.verify_email("/api/auth/signup", token).await;
-
+    dbg!(&response);
     response.status_code().is_success()
 }
 
@@ -105,7 +105,7 @@ async fn test_verification_token_stored_in_redis() -> anyhow::Result<()> {
     let (_raw_tokens, hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
 
     // Get Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify all tokens exist in Redis
     for hashed_token in &hashed_tokens {
@@ -194,7 +194,7 @@ async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()>
     );
 
     // Step 4: Verify old tokens were cleaned up
-    let mut redis_conn = get_redis_con(state.redis_pool).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
     for hashed_token in &hashed_tokens {
         let token_exists = is_token_exist(&mut redis_conn, hashed_token).await?;
         assert!(
@@ -215,7 +215,7 @@ async fn test_verification_removes_token_from_redis() -> anyhow::Result<()> {
     let (raw_tokens, hashed_tokens) = signup_and_get_tokens(&app, &account).await?;
 
     // Get Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool.clone()).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify tokens exist BEFORE verification
     for hashed_token in &hashed_tokens {
@@ -232,7 +232,7 @@ async fn test_verification_removes_token_from_redis() -> anyhow::Result<()> {
     }
 
     // Refresh Redis connection
-    let mut redis_conn = get_redis_con(state.redis_pool).await?;
+    let mut redis_conn = get_redis_con(&state.redis_pool).await?;
 
     // Verify tokens removed AFTER verification
     for hashed_token in &hashed_tokens {

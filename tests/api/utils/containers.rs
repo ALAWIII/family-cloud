@@ -96,8 +96,8 @@ pub async fn get_email_config(
 pub fn get_rustfs_config() -> RustfsConfig {
     RustfsConfig {
         region: env::var("RUSTFS_REGION").unwrap_or("us-east-1".into()),
-        access_key: env::var("RUSTFS_ACCESS_KEY").unwrap_or("minioadmin".into()),
-        url: env::var("RUSTFS_URL").unwrap_or("http://127.0.0.1:9000".into()),
+        access_key: env::var("RUSTFS_ACCESS_KEY_ID").unwrap_or("minioadmin".into()),
+        url: env::var("RUSTFS_ENDPOINT_URL").unwrap_or("http://127.0.0.1:9000".into()),
     }
 }
 
