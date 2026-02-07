@@ -7,7 +7,10 @@ use chrono::{NaiveDateTime, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
 use sqlx::prelude::FromRow;
+use tracing::{error, info, warn};
 use uuid::Uuid;
+
+use crate::{decrement_concurrent_download, get_redis_con};
 
 #[derive(Debug, Deserialize, Serialize, FromRow)]
 pub struct User {
@@ -278,5 +281,48 @@ impl ObjectKind {
             return true;
         }
         false
+    }
+}
+#[derive(Deserialize)]
+pub struct StreamQuery {
+    pub token: Uuid,
+    pub download: Option<bool>, // Add this!
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanupGuard {
+    redis_pool: deadpool_redis::Pool,
+    token: Uuid,
+    user_key: String,
+}
+
+impl CleanupGuard {
+    pub fn new(redis_pool: deadpool_redis::Pool, token: Uuid, user_key: String) -> Self {
+        Self {
+            redis_pool,
+            token,
+            user_key,
+        }
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let pool = self.redis_pool.clone();
+        let token = self.token.to_string();
+        let user_key = self.user_key.clone();
+
+        // Spawn cleanup task (don't block Drop)
+        tokio::spawn(async move {
+            match get_redis_con(&pool).await {
+                Ok(mut con) => {
+                    match decrement_concurrent_download(&mut con, &token, &user_key).await {
+                        Err(e) => warn!(error = %e, "Failed to cleanup download token"),
+                        _ => info!(token = %token, "Download token cleaned up"),
+                    }
+                }
+                Err(e) => error!(error = %e, "Failed to get redis connection for cleanup"),
+            }
+        });
     }
 }
