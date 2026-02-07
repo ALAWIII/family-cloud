@@ -20,11 +20,16 @@ pub enum ApiError {
     #[error(transparent)]
     Crypto(#[from] CryptoError),
 
+    #[error("rustfs error")]
+    RustFs(#[from] RustFSError),
+
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
     #[error(transparent)]
     Config(#[from] ConfigError),
     // -------- Domain --------
+
+    //--------- rustfs -------------
     #[error("Conflict")]
     Conflict,
 
@@ -33,6 +38,10 @@ pub enum ApiError {
 
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("user exceeded the limit of concurrent downloads allowed.")]
+    TooManyDownloads,
+    #[error("requested object is not available.")]
+    NotFound,
 }
 
 impl IntoResponse for ApiError {
@@ -79,11 +88,14 @@ impl IntoResponse for ApiError {
 
             // ---------- Serialization ----------
             ApiError::Serialization(_) | ApiError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
-
+            //---------------------
+            ApiError::RustFs(_) => StatusCode::INTERNAL_SERVER_ERROR,
             // ---------- Domain helpers ----------
             ApiError::Conflict => StatusCode::CONFLICT,
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiError::TooManyDownloads => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::NotFound => StatusCode::NOT_FOUND,
         };
 
         status.into_response()
