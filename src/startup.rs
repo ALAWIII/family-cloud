@@ -29,7 +29,7 @@ pub fn build_router(state: AppState) -> Result<Router, ApiError> {
     let router = Router::new()
         .merge(authentication())
         .merge(user_management())
-        .merge(storage_objects())
+        .merge(storage_objects(state.settings.secrets.hmac.clone()))
         .merge(sharing_object())
         .merge(storage_status())
         .merge(pswd_router())
