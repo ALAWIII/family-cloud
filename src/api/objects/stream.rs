@@ -51,7 +51,7 @@ pub async fn stream(
         user_ip = %addr.ip(),
         stored_ip=d_content.ip_address,
         object_key = %d_content.object_d.object_key,
-        is_folder = d_content.object_d.kind.is_folder(),
+        is_folder = d_content.object_d.is_folder,
         download_mode = stream_info.download.unwrap_or(false),
         "Processing download request"
     );
@@ -91,7 +91,7 @@ pub async fn stream(
     let c_guard = CleanupGuard::new(appstate.redis_pool.clone(), stream_info.token, user_d_key);
     //--------------------------------- streaming object -------------------
     let object_name = d_content.object_d.object_name();
-    let mut response = if d_content.object_d.kind.is_folder() {
+    let mut response = if d_content.object_d.is_folder {
         // fetch all its name prefixes/postfixes .
         // loop over all those names and pipe them to a giant zip file.
         // success ? Ok(())
@@ -146,10 +146,8 @@ async fn stream_file(
         .send()
         .await
         .map_err(|e| RustFSError::S3(e.into()))?; // send the request to RustFS
-    let stored_etag = obj_res.e_tag();
-    if let Some(s_etag) = stored_etag
-        && s_etag != d_content.object_d.etag
-    {
+    let stored_etag = obj_res.e_tag.as_ref();
+    if stored_etag != d_content.object_d.etag.as_ref() {
         info!(
             "etag of an object has changed, decrementing number of concurrent downloads for user...."
         );
