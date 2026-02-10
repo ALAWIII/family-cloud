@@ -4,7 +4,10 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
 use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
-use crate::{DatabaseConfig, DatabaseError, ObjectDownload, User};
+use crate::{
+    DatabaseConfig, DatabaseError, ObjectDownload, ObjectRecord, ObjectStatus, RustFSError, User,
+    UserStorageInfo,
+};
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
@@ -38,7 +41,7 @@ pub fn get_db() -> Result<PgPool, DatabaseError> {
         .cloned()
 }
 
-pub async fn insert_new_account(user: User, db_pool: &PgPool) -> Result<(), DatabaseError> {
+pub async fn insert_new_account(user: &User, db_pool: &PgPool) -> Result<(), DatabaseError> {
     debug!(
     user_id=%user.id,
     user_name=user.username,
@@ -166,7 +169,7 @@ pub async fn fetch_object_info(
             id,
             user_id,
             object_key,
-            object_kind as "kind:_",
+            is_folder,
             etag,
             status as "status:_",
             size,
@@ -178,5 +181,48 @@ pub async fn fetch_object_info(
         user_id,
     )
     .fetch_optional(con)
+    .await?)
+}
+// When user explicitly creates a folder
+pub async fn insert_obj(con: &PgPool, obj: ObjectRecord) -> Result<PgQueryResult, DatabaseError> {
+    Ok(sqlx::query(
+        r#"
+        INSERT INTO objects (
+            id, user_id, object_key, size, etag, mime_type, last_modified,
+            created_at, checksum_sha256, custom_metadata, status, visibility, is_folder
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, $13
+        )
+        "#,
+    )
+    .bind(obj.id)
+    .bind(obj.user_id)
+    .bind(obj.object_key)
+    .bind(obj.size)
+    .bind(obj.etag)
+    .bind(obj.mime_type)
+    .bind(obj.last_modified)
+    .bind(obj.created_at)
+    .bind(obj.checksum_sha256)
+    .bind(obj.custom_metadata)
+    .bind(obj.status) // ObjectStatus works via sqlx::Type here
+    .bind(obj.visibility)
+    .bind(obj.is_folder)
+    .execute(con)
+    .await?)
+}
+
+pub async fn get_user_available_storage(
+    con: &PgPool,
+    user_id: Uuid,
+) -> Result<UserStorageInfo, DatabaseError> {
+    Ok(sqlx::query_as!(
+        UserStorageInfo,
+        "SELECT storage_quota_bytes,storage_used_bytes FROM users where id=$1",
+        user_id
+    )
+    .fetch_one(con)
     .await?)
 }
