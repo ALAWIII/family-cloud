@@ -6,6 +6,7 @@ use chrono::DateTime;
 use chrono::{NaiveDateTime, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
 use sqlx::prelude::FromRow;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -204,39 +205,98 @@ impl UserTokenPayload {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObjectRecord {
     // ===== Identity (DB authority) =====
-    pub id: Uuid,           // internal unique file_id
-    pub user_id: Uuid,      // == bucket_name == bucket_id
-    pub object_key: String, // actual key in RustFS (e.g. "/shawarma/potato.txt")
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub object_key: String, // e.g. "/shawarma/potato.txt" or "/shawarma/folder/"
 
-    // ===== RustFS technical metadata =====
-    pub size: i64,                    // content_length
-    pub etag: String,                 // e_tag
-    pub mime_type: Option<String>,    // content_type (nullable)
-    pub last_modified: DateTime<Utc>, // from RustFS
+    // ===== RustFS technical metadata (OPTIONAL for folders) =====
+    pub size: Option<i64>,                    // None for folders
+    pub etag: Option<String>,                 // None for folders
+    pub mime_type: Option<String>,            // None for folders
+    pub last_modified: Option<DateTime<Utc>>, // None for folders
 
     // ===== System / business metadata =====
-    pub created_at: DateTime<Utc>, // DB timestamp
-    pub visibility: Visibility,    // public / private
-    pub status: ObjectStatus,      // active / deleted / archived
+    pub created_at: DateTime<Utc>,
+    pub visibility: Visibility,
+    pub status: ObjectStatus,
 
-    // ===== Optional / advanced =====
-    pub checksum_sha256: String,
-    pub custom_metadata: Option<serde_json::Value>, // copy of RustFS metadata
+    // ===== Optional / advanced (OPTIONAL for folders) =====
+    pub checksum_sha256: Option<String>, // None for folders
+    pub custom_metadata: Option<serde_json::Value>,
+
+    // ===== NEW: Folder-specific =====
+    pub is_folder: bool, // Distinguish file vs folder
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ObjectRecord {
+    pub fn new(user_id: Uuid, obj_key: &str, is_folder: bool) -> Self {
+        Self {
+            user_id,
+            object_key: obj_key.into(),
+            is_folder,
+            ..Default::default()
+        }
+    }
+    pub fn bucket_name(&self) -> String {
+        self.user_id.to_string()
+    }
+    pub fn size(&mut self, s: i64) {
+        self.size = Some(s);
+    }
+    pub fn object_key(&mut self, key: impl Into<String>) {
+        self.object_key = key.into();
+    }
+    pub fn etag(&mut self, e: impl Into<String>) {
+        self.etag = Some(e.into());
+    }
+    pub fn mime_type(&mut self, m: impl Into<String>) {
+        self.mime_type = Some(m.into())
+    }
+    pub fn last_modified(&mut self, ldate: DateTime<Utc>) {
+        self.last_modified = Some(ldate);
+    }
+    pub fn created_at(&mut self, cat: DateTime<Utc>) {
+        self.created_at = cat;
+    }
+    pub fn visibility(&mut self, v: Visibility) {
+        self.visibility = v;
+    }
+    pub fn checksum_sha256(&mut self, c: impl Into<String>) {
+        self.checksum_sha256 = Some(c.into());
+    }
+    pub fn status(&mut self, s: ObjectStatus) {
+        self.status = s;
+    }
+    pub fn is_folder(&mut self, b: bool) {
+        self.is_folder = b;
+    }
+    pub fn add_metadata(&mut self, m: Value) -> bool {
+        if let Some(v) = self.custom_metadata.as_mut() {
+            return v.as_array_mut().is_some_and(|a| {
+                a.push(m);
+                true
+            });
+        }
+        self.custom_metadata = Some(serde_json::Value::from([m]));
+        true
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default)]
+#[sqlx(type_name = "visibility")]
+#[sqlx(rename_all = "lowercase")]
 pub enum Visibility {
     Public,
+    #[default]
     Private,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default)]
 #[sqlx(type_name = "object_status")]
 #[sqlx(rename_all = "lowercase")]
 pub enum ObjectStatus {
+    #[default]
     Active,
     Deleted,
 }
@@ -245,12 +305,12 @@ pub enum ObjectStatus {
 pub struct ObjectDownload {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub kind: ObjectKind,
+    pub is_folder: bool,
     pub object_key: String,
     pub status: ObjectStatus,
-    pub size: i64,
-    pub etag: String,
-    pub checksum_sha256: String,
+    pub size: Option<i64>,
+    pub etag: Option<String>,
+    pub checksum_sha256: Option<String>,
 }
 impl ObjectDownload {
     pub fn object_name(&self) -> String {
