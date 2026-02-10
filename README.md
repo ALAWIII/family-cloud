@@ -2,7 +2,7 @@
 
 Family Cloud is a self-hosted cloud storage and media server designed to provide secure file management, private sharing, and media streaming with full data ownership. It is built with a modern, scalable architecture focused on performance, security, and extensibility.
 
----
+
 
 ## ⚠️ Project Status
 
@@ -10,7 +10,7 @@ Family Cloud is a self-hosted cloud storage and media server designed to provide
 > Features, APIs, architecture, and data formats may change at any time.
 > Do **not** use this project in production environments.
 
----
+
 
 ## Overview
 
@@ -24,7 +24,7 @@ Key goals:
 * API-first architecture for web and mobile clients
 * Modular and extensible design
 
----
+
 
 ## Architecture (High-Level)
 
@@ -34,7 +34,7 @@ Key goals:
 * API Layer: HTTP/REST
 * Deployment: Docker-based containers
 
----
+
 
 ## Features (Current & Planned)
 
@@ -55,20 +55,17 @@ Key goals:
 * Client SDKs (CLI, web, mobile)
 * Sharing and collaboration features
 
----
+
 
 ## Motivation
 
 Most cloud solutions trade privacy and control for convenience. Family Cloud is built to reverse this trade-off by enabling users to run their own cloud infrastructure with modern capabilities and developer-friendly design.
 
----
 
 ## Disclaimer
 
 This project is experimental and evolving rapidly.
 Expect breaking changes and incomplete features.
-
----
 
 ## License
 
