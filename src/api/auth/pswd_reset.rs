@@ -104,7 +104,9 @@ pub async fn verify_password_reset(
             info!("password reset token is valid, responding password form.");
             password_form_page(raw_token.token.expose_secret())
         })
-        .ok_or(ApiError::BadRequest)
+        .ok_or(ApiError::BadRequest(anyhow::anyhow!(
+            "token not existed in redis database"
+        )))
 }
 #[instrument(skip_all)]
 pub async fn confirm_password_reset(
@@ -114,7 +116,9 @@ pub async fn confirm_password_reset(
     info!("confirming password reset request.");
     if form.new_password != form.confirm_password {
         error!("new password and its confirmation does not match.");
-        return Err(ApiError::BadRequest); // malformed ,invalid password matching
+        return Err(ApiError::BadRequest(anyhow::anyhow!(
+            "new password and its confirmation does not match."
+        ))); // malformed ,invalid password matching
     }
     info!("decoding and hashing the confirmation token.");
     let secret = appstate.settings.secrets.hmac.expose_secret();

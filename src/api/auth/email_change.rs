@@ -148,7 +148,9 @@ pub async fn cancel_change_email(
     let t = is_token_exist(&mut redis_con, &key).await?;
     if !t {
         error!("invalid cancel token.");
-        return Err(ApiError::BadRequest);
+        return Err(ApiError::BadRequest(anyhow::anyhow!(
+            "invalid cancel token"
+        )));
     }
     info!("deleting token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
