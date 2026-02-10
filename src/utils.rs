@@ -4,7 +4,6 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
-use aws_sdk_s3::{Client, primitives::ByteStream};
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use jsonwebtoken::{EncodingKey, Header, encode};
@@ -18,9 +17,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    ApiError, Claims, CryptoError, RustFSError, TokenPayload, TokenType, UserTokenPayload,
-};
+use crate::{ApiError, Claims, CryptoError, TokenPayload, TokenType, UserTokenPayload};
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
@@ -170,38 +167,4 @@ pub fn extract_refresh_token(
 /// the token maybe Uuid or CSRPNG hashed
 pub fn create_redis_key(token_type: TokenType, token: &str) -> String {
     format!("{}:{}", token_type, token)
-}
-
-// When user explicitly creates a folder
-pub async fn create_folder(
-    s3_client: &Client,
-    user_id: &str,
-    folder_path: &str,
-) -> Result<(), ApiError> {
-    let mut key = folder_path.to_string();
-    if !key.ends_with('/') {
-        key.push('/');
-    }
-
-    s3_client
-        .put_object()
-        .bucket(user_id)
-        .key(&key)
-        .content_type("application/x-directory") // optional metadata
-        .body(ByteStream::from(vec![]))
-        .send()
-        .await
-        .unwrap();
-
-    Ok(())
-}
-pub async fn create_user_bucket(rfs_client: &Client, user_id: &str) -> Result<(), RustFSError> {
-    rfs_client
-        .create_bucket()
-        .bucket(user_id)
-        .send()
-        .await
-        .map_err(|e| RustFSError::BucketCreate(e.into()))
-        .inspect_err(|e| error!("{}", e))?;
-    Ok(())
 }
