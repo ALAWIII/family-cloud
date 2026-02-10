@@ -51,6 +51,8 @@ struct UploadHeaders {
     pub checksum: Option<String>,
 }
 
+/// # WorkFlow
+/// -
 #[instrument(skip_all, err,fields(
     user_id=%claims.sub,
     username=claims.username
@@ -201,12 +203,40 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
     })
 }
 
+/// ===== Create multipart session, returns upload id =====
+async fn create_multipart_upload(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    obj_type: &str,
+) -> Result<String, RustFSError> {
+    let response = client
+        .create_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .content_type(obj_type)
+        .send()
+        .await
+        .map_err(|e| {
+            RustFSError::Upload(anyhow!(
+                "failed to create multipart upload transaction: {}",
+                e
+            ))
+        })?;
+
+    response
+        .upload_id()
+        .map(|id| id.to_string())
+        .ok_or_else(|| RustFSError::Upload(anyhow!("No upload ID returned")))
+}
 /// # Main entry point
 /// - the function orchestrator for the whole streaming process.
 /// 1. spawn_body_streamer: collects, chunks the arrived bytes into buffer and sends them into the channel (part_tx).
 /// 2. spawn_uploaders: spawns multiple parllel uploaders, recives arrived Part's (part_rx) stream them to RustFS, the results returned are sent into the channel (result_tx).
 /// 3. collect_results: recives a stream of completed parts using (result_rx) and then collects and return back.
-/// 4.
+/// 4. body streams -> spawn_uploaders uses upload_single_part(part_x) -> collect_results.
+/// 5. collect_results is_failure ? abort the whole upload, otherwise when all parts are streamed with OK pass.
+/// 6. complete_upload with a list of sorted success uploaded parts.
 pub async fn stream_file_rustfs_parallel(
     client: &Client,
     body: Body,
@@ -246,31 +276,54 @@ pub async fn stream_file_rustfs_parallel(
     complete_upload(client, bucket, key, upload_id, completed_parts).await
 }
 
-// ===== Create multipart session =====
-async fn create_multipart_upload(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    obj_type: &str,
-) -> Result<String, RustFSError> {
-    let response = client
-        .create_multipart_upload()
-        .bucket(bucket)
-        .key(key)
-        .content_type(obj_type)
-        .send()
-        .await
-        .map_err(|e| {
-            RustFSError::Upload(anyhow!(
-                "failed to create multipart upload transaction: {}",
-                e
-            ))
-        })?;
+/// # ===== Stream body and buffer into parts =====
+/// 1. collects bytes from  body into buffer.
+/// 2. len(buffer) = 5MB -> wrap the 5MB bytes into Part type and send it using part_tx
+fn spawn_body_streamer(
+    body: Body,
+    part_tx: mpsc::Sender<PartToUpload>,
+) -> tokio::task::JoinHandle<Result<(), RustFSError>> {
+    tokio::spawn(async move {
+        debug!("consuming body.");
+        let mut stream = body.into_data_stream();
+        let mut buffer = BytesMut::new();
+        let mut part_number = 1;
 
-    response
-        .upload_id()
-        .map(|id| id.to_string())
-        .ok_or_else(|| RustFSError::Upload(anyhow!("No upload ID returned")))
+        loop {
+            // Fill buffer to PART_SIZE
+            while buffer.len() < PART_SIZE {
+                match stream.next().await {
+                    Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
+                    Some(Err(e)) => {
+                        return Err(RustFSError::Upload(anyhow!("Stream error: {}", e)));
+                    }
+                    None => break,
+                }
+            }
+
+            if buffer.is_empty() {
+                debug!("buffer is empty.");
+                break;
+            }
+
+            // Extract part data ~ 5MB
+            let data = if buffer.len() >= PART_SIZE {
+                buffer.split_to(PART_SIZE).freeze()
+            } else {
+                buffer.split().freeze()
+            };
+
+            // Send to uploaders
+            part_tx
+                .send(PartToUpload { part_number, data })
+                .await
+                .map_err(|_| RustFSError::Upload(anyhow!("Upload channel closed")))?;
+
+            part_number += 1;
+        }
+
+        Ok(())
+    })
 }
 
 /// ===== Spawn parallel uploader tasks =====
@@ -327,58 +380,7 @@ fn spawn_uploaders(
         join_all(handles).await;
     })
 }
-
-/// # ===== Stream body and buffer into parts =====
-/// 1. collects bytes from  body into buffer.
-/// 2. len(buffer) = 5MB -> wrap the 5MB bytes into Part type and send it using part_tx
-fn spawn_body_streamer(
-    body: Body,
-    part_tx: mpsc::Sender<PartToUpload>,
-) -> tokio::task::JoinHandle<Result<(), RustFSError>> {
-    tokio::spawn(async move {
-        debug!("consuming body.");
-        let mut stream = body.into_data_stream();
-        let mut buffer = BytesMut::new();
-        let mut part_number = 1;
-
-        loop {
-            // Fill buffer to PART_SIZE
-            while buffer.len() < PART_SIZE {
-                match stream.next().await {
-                    Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
-                    Some(Err(e)) => {
-                        return Err(RustFSError::Upload(anyhow!("Stream error: {}", e)));
-                    }
-                    None => break,
-                }
-            }
-
-            if buffer.is_empty() {
-                debug!("buffer is empty.");
-                break;
-            }
-
-            // Extract part data ~ 5MB
-            let data = if buffer.len() >= PART_SIZE {
-                buffer.split_to(PART_SIZE).freeze()
-            } else {
-                buffer.split().freeze()
-            };
-
-            // Send to uploaders
-            part_tx
-                .send(PartToUpload { part_number, data })
-                .await
-                .map_err(|_| RustFSError::Upload(anyhow!("Upload channel closed")))?;
-
-            part_number += 1;
-        }
-
-        Ok(())
-    })
-}
-
-// ===== Collect upload results =====
+/// ===== Collect upload results, on error should abort the whole upload. =====
 async fn collect_results(
     mut result_rx: mpsc::Receiver<Result<CompletedPart, RustFSError>>,
 ) -> Result<Vec<CompletedPart>, RustFSError> {
@@ -392,50 +394,6 @@ async fn collect_results(
     completed_parts.sort_by_key(|p| p.part_number);
     debug!("collecting parts and sorting them success.");
     Ok(completed_parts)
-}
-
-// ===== Complete multipart upload =====
-async fn complete_upload(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    upload_id: &str,
-    completed_parts: Vec<CompletedPart>,
-) -> Result<(), RustFSError> {
-    let completed = CompletedMultipartUpload::builder()
-        .set_parts(Some(completed_parts))
-        .build();
-
-    client
-        .complete_multipart_upload()
-        .bucket(bucket)
-        .key(key)
-        .upload_id(upload_id)
-        .multipart_upload(completed)
-        .send()
-        .await
-        .map_err(|e| RustFSError::Upload(anyhow!("Complete upload failed: {}", e)))?;
-
-    Ok(())
-}
-
-// ===== Abort multipart upload on error =====
-async fn abort_upload(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    upload_id: &str,
-) -> Result<(), RustFSError> {
-    client
-        .abort_multipart_upload()
-        .bucket(bucket)
-        .key(key)
-        .upload_id(upload_id)
-        .send()
-        .await
-        .map_err(|e| RustFSError::Upload(anyhow!("Abort upload failed: {}", e)))?;
-
-    Ok(())
 }
 
 // ===== Upload single part with retry =====
@@ -479,4 +437,49 @@ async fn upload_single_part(
         }
     }
     unreachable!()
+}
+
+/// ===== Complete multipart upload, commits the uploaded file to RustFS.=====
+async fn complete_upload(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    completed_parts: Vec<CompletedPart>,
+) -> Result<(), RustFSError> {
+    let completed = CompletedMultipartUpload::builder()
+        .set_parts(Some(completed_parts))
+        .build();
+
+    client
+        .complete_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .upload_id(upload_id)
+        .multipart_upload(completed)
+        .send()
+        .await
+        .map_err(|e| RustFSError::Upload(anyhow!("Complete upload failed: {}", e)))?;
+
+    Ok(())
+}
+
+/// ===== Abort multipart upload on error =====
+/// - cleans any unfinshed upload on failure.
+async fn abort_upload(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+) -> Result<(), RustFSError> {
+    client
+        .abort_multipart_upload()
+        .bucket(bucket)
+        .key(key)
+        .upload_id(upload_id)
+        .send()
+        .await
+        .map_err(|e| RustFSError::Upload(anyhow!("Abort upload failed: {}", e)))?;
+
+    Ok(())
 }
