@@ -12,6 +12,10 @@ pub enum RustFSError {
     EmptyFolder,
     #[error("failed to create new user bucket: {0:?}")]
     BucketCreate(anyhow::Error),
+    #[error("failed to obtain object metadata: {0:?}")]
+    Metadata(anyhow::Error),
     #[error("S3 operation failed: {0}")]
     S3(anyhow::Error),
+    #[error("Upload error: {0:?}")]
+    Upload(anyhow::Error),
 }

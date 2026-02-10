@@ -28,13 +28,14 @@ pub enum ApiError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     // -------- Domain --------
-
+    #[error("Corrupted or malformed byte stream")]
+    CorruptedByte(#[from] axum::Error),
     //--------- rustfs -------------
     #[error("Conflict")]
     Conflict,
 
     #[error("Bad request")]
-    BadRequest,
+    BadRequest(#[from] anyhow::Error),
 
     #[error("Unauthorized")]
     Unauthorized,
@@ -92,10 +93,11 @@ impl IntoResponse for ApiError {
             ApiError::RustFs(_) => StatusCode::INTERNAL_SERVER_ERROR,
             // ---------- Domain helpers ----------
             ApiError::Conflict => StatusCode::CONFLICT,
-            ApiError::BadRequest => StatusCode::BAD_REQUEST,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::TooManyDownloads => StatusCode::TOO_MANY_REQUESTS,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::CorruptedByte(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         status.into_response()
