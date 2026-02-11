@@ -1,14 +1,7 @@
-mod signup;
+mod auth;
 mod utils;
 use family_cloud::init_tracing;
 pub use utils::*;
-mod change_email;
-mod login;
-mod logout;
-mod password_reset;
-mod refresh;
-/*
-*/
 
 // ============================================================================
 // Shared Test Setup - Initialize All Infrastructure
