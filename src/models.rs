@@ -233,6 +233,7 @@ pub struct ObjectRecord {
 impl ObjectRecord {
     pub fn new(user_id: Uuid, obj_key: &str, is_folder: bool) -> Self {
         Self {
+            id: Uuid::new_v4(),
             user_id,
             object_key: obj_key.into(),
             is_folder,
@@ -334,7 +335,18 @@ pub enum ObjectKind {
     File,
     Folder,
 }
-
+impl Display for ObjectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::File => "file",
+                Self::Folder => "folder",
+            }
+        )
+    }
+}
 impl ObjectKind {
     pub fn is_folder(&self) -> bool {
         if let Self::Folder = self {
