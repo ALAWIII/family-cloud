@@ -20,7 +20,7 @@ pub enum ApiError {
     #[error(transparent)]
     Crypto(#[from] CryptoError),
 
-    #[error("rustfs error")]
+    #[error("rustfs error: {0}")]
     RustFs(#[from] RustFSError),
 
     #[error(transparent)]
@@ -28,13 +28,13 @@ pub enum ApiError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     // -------- Domain --------
-    #[error("Corrupted or malformed byte stream")]
+    #[error("Corrupted or malformed byte stream: {0}")]
     CorruptedByte(#[from] axum::Error),
     //--------- rustfs -------------
     #[error("Conflict")]
     Conflict,
 
-    #[error("Bad request")]
+    #[error("Bad request: {0}")]
     BadRequest(#[from] anyhow::Error),
 
     #[error("Unauthorized")]
