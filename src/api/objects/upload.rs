@@ -1,12 +1,11 @@
-use std::path::Path;
-
 use crate::{
     ApiError, AppState, Claims, ObjectKind, ObjectRecord, RustFSError, fetch_object_metadata,
-    get_user_available_storage, insert_obj,
+    get_user_available_storage, insert_obj, is_object_exists,
 };
 use anyhow::anyhow;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+use axum::Json;
 use axum::body::Bytes;
 use axum::{
     Extension,
@@ -18,16 +17,17 @@ use axum::{
     },
 };
 use futures::future::join_all;
+use path_clean::PathClean;
+use std::path::Path;
 
 use mime_guess::mime;
-use path_security::validate_path;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::bytes::BytesMut;
-use tracing::{debug, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 const PART_SIZE: usize = 5 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 4;
@@ -53,7 +53,7 @@ struct UploadHeaders {
 
 /// # WorkFlow
 /// -
-#[instrument(skip_all, err,fields(
+#[instrument(skip_all, fields(
     user_id=%claims.sub,
     username=claims.username
 ))]
@@ -62,24 +62,37 @@ pub async fn upload(
     Extension(claims): Extension<Claims>,
     headers: HeaderMap,
     body: Body,
-) -> Result<StatusCode, ApiError> {
+) -> Result<(StatusCode, Json<ObjectRecord>), ApiError> {
     info!("uploading new file.");
-    let uphead = extract_headers(&headers)?;
+    let uphead = extract_headers(&headers).inspect_err(|e| error!("{}", e))?;
     info!("validating object key path structure.");
-    validate_file_path(&claims.sub.to_string(), &uphead.object_key)?;
+    validate_file_path(&claims.sub.to_string(), &uphead.object_key)
+        .inspect_err(|e| error!("{}", e))?;
+    // checking whether the object already existed in RustFS and database.
+    if let Some(obj) = is_object_exists(&appstate.db_pool, claims.sub, &uphead.object_key)
+        .await
+        .inspect_err(|e| error!("{}", e))?
+    {
+        error!(object_id=%obj,object_kind=%uphead.object_kind,object_key=uphead.object_key,"already existed and active in the database.");
+        return Err(ApiError::Conflict);
+    }
     //-------------------------------
     let mut obj = ObjectRecord::new(claims.sub, &uphead.object_key, true);
     if uphead.object_kind.is_folder() {
         info!("creating new folder.");
         // if obj_kind is folder -> create the folder quickly -> grab the metadata store in database -> and return success
-        insert_obj(&appstate.db_pool, obj).await?;
+        insert_obj(&appstate.db_pool, &obj)
+            .await
+            .inspect_err(|e| error!("{}", e))?;
         info!("folder created successfully.");
-        return Ok(StatusCode::CREATED);
+        return Ok((StatusCode::CREATED, Json(obj)));
     }
 
     //--------------- check the available space user have . space_used + content_length >= maximum_space -> reject the upload. ---------------
     info!("fetching user available storage to store new file.");
-    let s_info = get_user_available_storage(&appstate.db_pool, claims.sub).await?;
+    let s_info = get_user_available_storage(&appstate.db_pool, claims.sub)
+        .await
+        .inspect_err(|e| error!("{}", e))?;
     if s_info.storage_used_bytes + uphead.content_length.unwrap_or(0) > s_info.storage_quota_bytes {
         return Err(ApiError::Unauthorized);
     }
@@ -97,7 +110,8 @@ pub async fn upload(
         &obj.object_key,
         obj.mime_type.as_ref().unwrap(),
     )
-    .await?;
+    .await
+    .inspect_err(|e| error!("{}", e))?;
 
     // ---------------------- streaming the file
     info!("start streaming the file to RustFS object storage.");
@@ -108,30 +122,46 @@ pub async fn upload(
         &obj.object_key,
         &upload_id,
     )
-    .await;
+    .await
+    .inspect_err(|e| error!("{}", e));
     //-------- abort on error --------------
     if let Err(r) = rs {
         info!("aborting the upload.");
-        abort_upload(&appstate.rustfs_con, &bucket, &obj.object_key, &upload_id).await?;
+        abort_upload(&appstate.rustfs_con, &bucket, &obj.object_key, &upload_id)
+            .await
+            .inspect_err(|e| error!("{}", e))?;
         return Err(r)?;
     }
     //--------------------- ask rustfs to complement the metadata of the object------------------
     info!("fetch object metadata from RustFS.");
-    fetch_object_metadata(&appstate.rustfs_con, &mut obj).await?;
+    fetch_object_metadata(&appstate.rustfs_con, &mut obj)
+        .await
+        .inspect_err(|e| error!("{}", e))?;
     //-------- insert the object(file) information into the database-----------------------
     info!("inserting new object with metadata into database.");
-    insert_obj(&appstate.db_pool, obj).await?;
+    insert_obj(&appstate.db_pool, &obj)
+        .await
+        .inspect_err(|e| error!("database inserting failed: {}", e))?;
     info!("new file created successfully.");
-    Ok(StatusCode::CREATED)
+    Ok((StatusCode::CREATED, Json(obj)))
 }
 
 /// validates a path that follows a parent path and does not escape its domain.
 fn validate_file_path(bucket: &str, key: &str) -> Result<(), RustFSError> {
-    let bucket_p = format!("/{}", bucket);
-    let f_path = format!("{}{}", bucket_p, key); // assuming obj_key should start with '/'
-    validate_path(Path::new(&f_path), Path::new(&bucket_p)).map_err(|e| {
-        RustFSError::Upload(anyhow!("invalid object_key: {}, error: {}", f_path, e))
-    })?;
+    // 1. Join manually to ensure no root replacement
+    let full_path = Path::new(bucket).join(key.trim_start_matches('/'));
+
+    // 2. Clean the path (resolves ".." and ".") strictly in memory
+    let clean_path = full_path.clean();
+
+    // 3. Security Check: ensure it still starts with the bucket
+    if !clean_path.starts_with(bucket) || clean_path != full_path {
+        return Err(RustFSError::Upload(anyhow!(
+            "Path traversal detected, the object key provided is malformed or invalid: {}",
+            key
+        )));
+    }
+
     Ok(())
 }
 /// extracts required and optional headers.
@@ -152,22 +182,25 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
     let mut obj_key = headers
         .get("Object-Key")
         .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string()) // Own the String
+        .map(|s| s.to_string())
         .ok_or(ApiError::BadRequest(anyhow!("Missing Object-Key header")))?;
+
+    // REMOVE leading slash if present (S3 keys should not start with /)
+    obj_key = obj_key.trim_start_matches('/').to_string();
 
     let (cont_len, cont_type, checksum) = if obj_kind.is_folder() {
         debug!("the object is folder");
         if !obj_key.ends_with('/') {
             obj_key.push('/');
         }
-        if !obj_key.starts_with("/") {
+        if !obj_key.starts_with('/') {
             obj_key = format!("/{}", obj_key);
         }
         (None, None, None)
     } else {
         debug!("the object is file");
         let cont_len = headers
-            .get(CONTENT_LENGTH) // Use const axum::http::header::CONTENT_LENGTH
+            .get(CONTENT_LENGTH)
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.parse::<i64>().ok())
             .ok_or(ApiError::BadRequest(anyhow!(
@@ -177,23 +210,22 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
         let cont_type = headers
             .get(CONTENT_TYPE)
             .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.parse().ok()) // mime::Mime
+            .and_then(|s| s.parse().ok())
             .or_else(|| mime_guess::from_path(&obj_key).first())
             .unwrap_or(mime::APPLICATION_OCTET_STREAM)
             .to_string();
+
         let checksum = headers
             .get("x-amz-checksum-sha256")
             .map(|h| h.to_str().map(String::from).ok())
             .ok_or(ApiError::BadRequest(anyhow!(
                 "missing or malformed checksum header."
             )))?;
-        if !obj_key.starts_with("/") {
-            obj_key = format!("/{}", obj_key);
-        }
 
         (Some(cont_len), Some(cont_type), checksum)
     };
 
+    debug!("headers extracted successfully");
     Ok(UploadHeaders {
         object_key: obj_key,
         object_kind: obj_kind,
@@ -210,6 +242,13 @@ async fn create_multipart_upload(
     key: &str,
     obj_type: &str,
 ) -> Result<String, RustFSError> {
+    debug!(
+        object_key = key,
+        bucket = bucket,
+        obj_type = obj_type,
+        "creating multipart upload with obj_type: {}",
+        obj_type
+    );
     let response = client
         .create_multipart_upload()
         .bucket(bucket)
@@ -219,7 +258,7 @@ async fn create_multipart_upload(
         .await
         .map_err(|e| {
             RustFSError::Upload(anyhow!(
-                "failed to create multipart upload transaction: {}",
+                "failed to create multipart upload transaction: {:?}",
                 e
             ))
         })?;
