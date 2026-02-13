@@ -184,7 +184,7 @@ pub async fn fetch_object_info(
     .await?)
 }
 // When user explicitly creates a folder
-pub async fn insert_obj(con: &PgPool, obj: ObjectRecord) -> Result<PgQueryResult, DatabaseError> {
+pub async fn insert_obj(con: &PgPool, obj: &ObjectRecord) -> Result<PgQueryResult, DatabaseError> {
     Ok(sqlx::query(
         r#"
         INSERT INTO objects (
@@ -199,21 +199,33 @@ pub async fn insert_obj(con: &PgPool, obj: ObjectRecord) -> Result<PgQueryResult
     )
     .bind(obj.id)
     .bind(obj.user_id)
-    .bind(obj.object_key)
+    .bind(&obj.object_key)
     .bind(obj.size)
-    .bind(obj.etag)
-    .bind(obj.mime_type)
+    .bind(&obj.etag)
+    .bind(&obj.mime_type)
     .bind(obj.last_modified)
     .bind(obj.created_at)
-    .bind(obj.checksum_sha256)
-    .bind(obj.custom_metadata)
-    .bind(obj.status) // ObjectStatus works via sqlx::Type here
-    .bind(obj.visibility)
+    .bind(&obj.checksum_sha256)
+    .bind(&obj.custom_metadata)
+    .bind(&obj.status) // ObjectStatus works via sqlx::Type here
+    .bind(&obj.visibility)
     .bind(obj.is_folder)
     .execute(con)
     .await?)
 }
-
+pub async fn is_object_exists(
+    con: &PgPool,
+    user_id: Uuid,
+    obj_key: &str,
+) -> Result<Option<Uuid>, DatabaseError> {
+    Ok(sqlx::query_scalar!(
+        "SELECT id FROM objects WHERE user_id=$1 AND object_key=$2 AND status='active'",
+        user_id,
+        obj_key
+    )
+    .fetch_optional(con)
+    .await?)
+}
 pub async fn get_user_available_storage(
     con: &PgPool,
     user_id: Uuid,
