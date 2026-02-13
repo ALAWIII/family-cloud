@@ -23,7 +23,7 @@ use crate::{
 /// Setup environment and create a verified account
 async fn setup_with_verified_account()
 -> anyhow::Result<(AppTest, family_cloud::AppState, TestAccount)> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(true).await?;
     let db_pool = get_db()?;
 
     // Create a verified account in database
@@ -48,7 +48,7 @@ async fn request_reset_and_get_tokens(
     );
 
     // Fetch emails from MailHog
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = app.mailhog.as_ref().unwrap().get_all_messages().await?;
 
     // Extract raw tokens from password reset email
     let raw_tokens = EmailTokenExtractor::extract_raw_tokens(&messages, "Password");
@@ -84,7 +84,7 @@ async fn test_password_reset_request_sends_email() -> anyhow::Result<()> {
     );
 
     // Verify email was sent
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = app.mailhog.as_ref().unwrap().get_all_messages().await?;
     let tokens = EmailTokenExtractor::extract_raw_tokens(&messages, "Password");
 
     assert_eq!(
@@ -337,8 +337,8 @@ async fn test_password_reset_for_nonexistent_email() -> anyhow::Result<()> {
     );
 
     // But no email should be sent
-    app.mailhog.delete_all_messages().await?;
-    let messages = app.mailhog.get_all_messages().await?;
+    app.mailhog.as_ref().unwrap().delete_all_messages().await?;
+    let messages = app.mailhog.as_ref().unwrap().get_all_messages().await?;
     assert!(
         messages.is_empty(),
         "No email should be sent for nonexistent account"

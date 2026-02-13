@@ -26,7 +26,7 @@ use crate::{
 /// Setup and return authenticated user with refresh token Redis key
 async fn setup_with_authenticated_user()
 -> anyhow::Result<(AppTest, family_cloud::AppState, LoginResponse, String)> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(false).await?;
     let db_pool = family_cloud::get_db()?;
 
     // Create verified account
@@ -132,7 +132,7 @@ async fn test_logout_with_token_in_body() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_logout_without_token() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(false).await?;
 
     // Try logout without any token
     let logout_response = app.logout().await;
@@ -173,7 +173,7 @@ async fn test_logout_prevents_token_reuse() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_logout_with_invalid_token() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(false).await?;
 
     // Create body with invalid token
     let (_cookie, body) = create_token_pair("invalid_refresh_token_xyz");

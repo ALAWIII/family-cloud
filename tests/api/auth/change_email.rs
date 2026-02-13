@@ -20,7 +20,7 @@ use crate::{
 // ============================================================================
 
 async fn setup_with_authenticated_user() -> anyhow::Result<(AppTest, TestAccount, LoginResponse)> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(true).await?;
     let db_pool = family_cloud::get_db()?;
 
     // Create verified account
@@ -58,7 +58,7 @@ async fn request_email_change_and_get_tokens(
     );
 
     // Get emails from MailHog
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = app.mailhog.as_ref().unwrap().get_all_messages().await?;
 
     // Extract tokens from both emails
     let verify_tokens = EmailTokenExtractor::extract_raw_tokens(&messages, "Change Email Request");
@@ -117,7 +117,7 @@ async fn test_request_email_change_sends_two_emails() -> anyhow::Result<()> {
         .await;
 
     // Get emails from MailHog
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = app.mailhog.as_ref().unwrap().get_all_messages().await?;
 
     // Verify we received both verification and cancel emails
     let verify_emails = EmailTokenExtractor::extract_raw_tokens(&messages, "Change Email Request");

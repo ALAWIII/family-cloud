@@ -22,9 +22,10 @@ use secrecy::ExposeSecret;
 // ============================================================================
 
 /// Setup and get authenticated user
-async fn setup_with_authenticated_user()
--> anyhow::Result<(AppTest, family_cloud::AppState, TestAccount, LoginResponse)> {
-    let (app, state) = setup_test_env().await?;
+async fn setup_with_authenticated_user(
+    m_cont: bool,
+) -> anyhow::Result<(AppTest, family_cloud::AppState, TestAccount, LoginResponse)> {
+    let (app, state) = setup_test_env(m_cont).await?;
     let db_pool = family_cloud::get_db()?;
 
     // Create verified account
@@ -49,7 +50,7 @@ async fn setup_with_authenticated_user()
 
 #[tokio::test]
 async fn test_refresh_with_token_in_body() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     // Create body with refresh token
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
@@ -73,7 +74,7 @@ async fn test_refresh_with_token_in_body() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_with_token_in_cookie() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     // Create cookie with refresh token
     let (cookie, _body) = create_token_pair(&login_data.refresh_token);
@@ -97,7 +98,7 @@ async fn test_refresh_with_token_in_cookie() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_without_token() -> anyhow::Result<()> {
-    let (app, _state, _account, _login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, _login_data) = setup_with_authenticated_user(false).await?;
 
     // Try refreshing without any token
     let response = app.refresh().await;
@@ -113,7 +114,7 @@ async fn test_refresh_without_token() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_generates_new_access_token() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
 
@@ -142,7 +143,7 @@ async fn test_refresh_generates_new_access_token() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_with_body_and_cookie_different_tokens() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (cookie, body) = create_token_pair(&login_data.refresh_token);
 
@@ -175,7 +176,7 @@ async fn test_refresh_with_body_and_cookie_different_tokens() -> anyhow::Result<
 
 #[tokio::test]
 async fn test_refresh_with_invalid_token() -> anyhow::Result<()> {
-    let (app, _state, _account, _login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, _login_data) = setup_with_authenticated_user(false).await?;
 
     // Create body with invalid token
     let (_cookie, body) = create_token_pair("invalid_refresh_token_xyz");
@@ -193,7 +194,7 @@ async fn test_refresh_with_invalid_token() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_multiple_times_in_sequence() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
     let mut tokens = Vec::new();
@@ -225,7 +226,7 @@ async fn test_refresh_multiple_times_in_sequence() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_returns_valid_jwt() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
 
@@ -249,7 +250,7 @@ async fn test_refresh_returns_valid_jwt() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_refresh_can_be_used_for_authenticated_requests() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(true).await?;
 
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
 
@@ -278,7 +279,7 @@ async fn test_refresh_can_be_used_for_authenticated_requests() -> anyhow::Result
 
 #[tokio::test]
 async fn test_refresh_after_logout_fails() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (cookie, body) = create_token_pair(&login_data.refresh_token);
 
@@ -302,7 +303,7 @@ async fn test_refresh_after_logout_fails() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_refreshes_succeed() -> anyhow::Result<()> {
-    let (app, _state, _account, login_data) = setup_with_authenticated_user().await?;
+    let (app, _state, _account, login_data) = setup_with_authenticated_user(false).await?;
 
     let (_cookie, body) = create_token_pair(&login_data.refresh_token);
 

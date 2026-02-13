@@ -14,12 +14,14 @@ use crate::{
     setup_test_env,
     utils::{AccountBuilder, AppTest, EmailTokenExtractor, TestAccount},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 // ============================================================================
 // Shared Helper Functions
 // ============================================================================
-
+async fn get_all_messages(app: &AppTest) -> anyhow::Result<Vec<Value>> {
+    app.mailhog.as_ref().unwrap().get_all_messages().await
+}
 /// Complete signup flow: signup, get email, extract tokens
 async fn signup_and_get_tokens(
     app: &AppTest,
@@ -36,7 +38,7 @@ async fn signup_and_get_tokens(
 
     assert!(response.status_code().is_success(), "Signup should succeed");
     // 2. Fetch all emails from MailHog
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = get_all_messages(&app).await?;
 
     // 3. Extract raw tokens from verification email
     let raw_tokens =
@@ -70,7 +72,7 @@ async fn verify_email_with_token(app: &AppTest, token: &str) -> bool {
 
 #[tokio::test]
 async fn test_signup_sends_verification_email() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(true).await?;
 
     // Create test account using builder
     let account = TestAccount::default();
@@ -80,7 +82,7 @@ async fn test_signup_sends_verification_email() -> anyhow::Result<()> {
     assert!(response.status_code().is_success(), "Signup should succeed");
 
     // Get messages from MailHog
-    let messages = app.mailhog.get_all_messages().await?;
+    let messages = get_all_messages(&app).await?;
 
     // Extract verification tokens
     let raw_tokens =
@@ -98,7 +100,7 @@ async fn test_signup_sends_verification_email() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_verification_token_stored_in_redis() -> anyhow::Result<()> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(true).await?;
 
     // Create and signup account
     let account = TestAccount::default();
@@ -122,7 +124,7 @@ async fn test_verification_token_stored_in_redis() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_verification_completes_account_creation() -> anyhow::Result<()> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(true).await?;
 
     // Create and signup account
     let account = TestAccount::default();
@@ -154,7 +156,7 @@ async fn test_verification_completes_account_creation() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(true).await?;
     let db_pool = get_db()?;
 
     // Step 1: Create and verify first account
@@ -173,7 +175,7 @@ async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()>
     assert!(user_exists.is_some(), "First account should exist");
 
     // Clear MailHog for clean test
-    app.mailhog.delete_all_messages().await?;
+    app.mailhog.as_ref().unwrap().delete_all_messages().await?;
 
     // Step 2: Try signing up with same email
     let response = app.signup(&account).await;
@@ -183,7 +185,7 @@ async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()>
     );
 
     // Step 3: Verify no new verification email was sent
-    let messages_after = app.mailhog.get_all_messages().await?;
+    let messages_after = get_all_messages(&app).await?;
     let new_tokens =
         EmailTokenExtractor::extract_raw_tokens(&messages_after, "new account email verification");
     // assert that only the original message is there and no new email verification signup message was sent
@@ -208,7 +210,7 @@ async fn test_existing_account_prevents_duplicate_signup() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn test_verification_removes_token_from_redis() -> anyhow::Result<()> {
-    let (app, state) = setup_test_env().await?;
+    let (app, state) = setup_test_env(true).await?;
 
     // Create and signup account
     let account = TestAccount::default();
@@ -252,7 +254,7 @@ async fn test_verification_removes_token_from_redis() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_signup_with_invalid_email_format() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(true).await?;
 
     let invalid_account = AccountBuilder::new().email("not-a-valid-email").build()?;
 
@@ -267,7 +269,7 @@ async fn test_signup_with_invalid_email_format() -> anyhow::Result<()> {
 
 //#[tokio::test]
 async fn test_signup_with_weak_password() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(true).await?;
 
     let weak_account = AccountBuilder::new()
         .password("123") // Too weak
@@ -284,7 +286,7 @@ async fn test_signup_with_weak_password() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_verification_with_invalid_token() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(true).await?;
 
     let response = app
         .verify_email("/api/auth/signup", "invalid_token_xyz")
