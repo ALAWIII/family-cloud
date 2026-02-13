@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::{error, info, instrument};
 
 use crate::{
-    ApiError, AppState, EmailInput, EmailSender, TokenPayload, User, UserVerification,
+    ApiError, AppState, EmailError, EmailInput, EmailSender, TokenPayload, User, UserVerification,
     create_redis_key, decode_token, delete_token_from_redis, deserialize_content, encode_token,
     fetch_account_info, fetch_redis_data, generate_token_bytes, get_redis_con, hash_password,
     hash_token, is_token_exist, password_reset_body, serialize_content, store_token_redis,
@@ -54,7 +54,11 @@ pub async fn password_reset(
     };
     let secret = appstate.settings.secrets.hmac.expose_secret();
 
-    let from_sender = appstate.settings.email.from_sender;
+    let from_sender = appstate
+        .settings
+        .email
+        .ok_or(EmailError::ClientNotInitialized)?
+        .from_sender;
     let app_url = appstate.settings.app.url();
     info!(
         "generating new password reset token ,hashing it and create a redis key for it, to verify the request."
@@ -78,7 +82,11 @@ pub async fn password_reset(
         .email_recipient(pswd_info.email)
         .subject("Password reset account".into())
         .email_body(body)
-        .send_email(appstate.mail_client)
+        .send_email(
+            appstate
+                .mail_client
+                .ok_or(EmailError::ClientNotInitialized)?,
+        )
         .await?;
     info!("Password Reset Success");
     Ok(StatusCode::OK)

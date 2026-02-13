@@ -1,6 +1,6 @@
 use crate::{
-    ApiError, AppState, CryptoError, DatabaseError, EmailSender, PendingAccount, SignupRequest,
-    TokenPayload, User, create_redis_key, create_user_bucket, decode_token,
+    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, PendingAccount,
+    SignupRequest, TokenPayload, User, create_redis_key, create_user_bucket, decode_token,
     delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
     generate_token_bytes, get_redis_con, hash_password, hash_token, insert_new_account,
     is_account_exist, serialize_content, store_token_redis, verification_body,
@@ -44,7 +44,11 @@ pub(super) async fn signup(
     }
     //---------------------------------------------------------------
     let secret = appstate.settings.secrets.hmac.expose_secret();
-    let from_sender = appstate.settings.email.from_sender;
+    let from_sender = appstate
+        .settings
+        .email
+        .ok_or(EmailError::ClientNotInitialized)?
+        .from_sender;
     let app_url = appstate.settings.app.url();
     // if email is new
 
@@ -81,7 +85,11 @@ pub(super) async fn signup(
         .email_recipient(signup_info.email)
         .subject("new account email verification".to_string())
         .email_body(email_body)
-        .send_email(appstate.mail_client)
+        .send_email(
+            appstate
+                .mail_client
+                .ok_or(EmailError::ClientNotInitialized)?,
+        )
         .await?;
     info!("Signup request success.");
     Ok(StatusCode::OK)

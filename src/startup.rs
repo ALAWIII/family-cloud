@@ -11,7 +11,7 @@ pub struct AppState {
     pub db_pool: PgPool,
     pub rustfs_con: aws_sdk_s3::Client,
     pub redis_pool: RedisPool,
-    pub mail_client: AsyncSmtpTransport<Tokio1Executor>,
+    pub mail_client: Option<AsyncSmtpTransport<Tokio1Executor>>,
 }
 
 pub fn setup_app() -> Result<AppState, ApiError> {
@@ -21,7 +21,7 @@ pub fn setup_app() -> Result<AppState, ApiError> {
         db_pool: get_db()?,
         rustfs_con: get_rustfs()?,
         redis_pool: get_redis_pool()?,
-        mail_client: get_mail_client()?,
+        mail_client: Some(get_mail_client()?),
     })
 }
 //---------------------------------------server---------------------------------------
@@ -54,7 +54,13 @@ pub async fn run() -> anyhow::Result<()> {
         &state.settings.app.tracing_settings(),
         &state.settings.app.log_directory,
     )?;
-    init_mail_client(&state.settings.email)?;
+    init_mail_client(
+        state
+            .settings
+            .email
+            .as_ref()
+            .ok_or(EmailError::ClientNotInitialized)?,
+    )?;
     init_redis_pool(&state.settings.redis).await?;
     init_rustfs(&state.settings.rustfs, &state.settings.secrets.rustfs).await?;
     init_db(&state.settings.database).await?;

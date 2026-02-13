@@ -39,7 +39,7 @@ impl<'de> Deserialize<'de> for LogLevel {
 pub struct AppSettings {
     pub app: AppConfig,
     pub database: DatabaseConfig,
-    pub email: EmailConfig,
+    pub email: Option<EmailConfig>,
     pub rustfs: RustfsConfig,
     pub secrets: Secrets,
     pub redis: RedisConfig,

@@ -7,7 +7,7 @@ use secrecy::ExposeSecret;
 use tracing::{error, info, instrument};
 
 use crate::{
-    ApiError, AppState, Claims, DatabaseError, EmailInput, EmailSender, TokenPayload,
+    ApiError, AppState, Claims, DatabaseError, EmailError, EmailInput, EmailSender, TokenPayload,
     UserVerification, create_redis_key, decode_token, delete_token_from_redis, deserialize_content,
     email_cancel_body, email_change_body, encode_token, fetch_email_by_id, fetch_redis_data,
     generate_token_bytes, get_redis_con, hash_token, is_account_exist, is_token_exist,
@@ -37,7 +37,14 @@ pub async fn change_email(
 
     //-------------------------
     let secret = appstate.settings.secrets.hmac;
-    let from_sender = appstate.settings.email.from_sender;
+    let from_sender = appstate
+        .settings
+        .email
+        .ok_or(EmailError::ClientNotInitialized)?
+        .from_sender;
+    let mail_client = appstate
+        .mail_client
+        .ok_or(EmailError::ClientNotInitialized)?;
     let app_url = appstate.settings.app.url();
     //-----------------
     info!("generating,encoding and hashing new change email verification token.");
@@ -69,7 +76,7 @@ pub async fn change_email(
             10,
             "Family Cloud",
         ))
-        .send_email(appstate.mail_client.clone())
+        .send_email(mail_client.clone())
         .await?;
     //----------------------------send cancel email for the old email-----------------
     info!("sending cancel email message to the old email address.");
@@ -87,7 +94,7 @@ pub async fn change_email(
             10,
             "Family Cloud",
         ))
-        .send_email(appstate.mail_client)
+        .send_email(mail_client)
         .await?;
 
     info!("change email request success.");
