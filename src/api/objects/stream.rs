@@ -29,7 +29,7 @@ use tracing::{debug, error, info, instrument};
 /// # object_key=file
 /// - stream it directly without compressing.
 /// - supports pause/resuming.
-#[instrument(skip_all, err)]
+#[instrument(skip_all)]
 pub async fn stream(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(appstate): State<AppState>,
@@ -87,7 +87,7 @@ pub async fn stream(
         .query_async(&mut redis_con)
         .await
         .map_err(CRedisError::Connection)?;
-    debug!("Creating cleanup guard");
+    info!("Creating cleanup guard");
     let c_guard = CleanupGuard::new(appstate.redis_pool.clone(), stream_info.token, user_d_key);
     //--------------------------------- streaming object -------------------
     let object_name = d_content.object_d.object_name();
@@ -111,8 +111,9 @@ pub async fn stream(
             stream_info.download.unwrap_or(false),
         )
         .await
-    }?;
-
+    }
+    .inspect_err(|e| error!("{}", e))?;
+    info!("adding clean up guard as extension to continue working until the end of stream.");
     response.extensions_mut().insert(c_guard);
     Ok(response)
 }
@@ -123,8 +124,8 @@ async fn stream_file(
     d_content: &DownloadTokenData,
     f_name: &str,
     download: bool,
-) -> Result<Response, ApiError> {
-    info!("start streaming the individual file.");
+) -> Result<Response, RustFSError> {
+    debug!("start streaming the individual file.");
     let range = headers
         .get(header::RANGE)
         .map(|v| v.to_str())
@@ -138,23 +139,23 @@ async fn stream_file(
         .key(&d_content.object_d.object_key);
 
     if let Some(range) = range {
-        info!("setting incoming Range header value and direct it to RustFS.");
+        debug!("setting incoming Range header value and direct it to RustFS.");
         obj_req = obj_req.range(range);
     }
-    info!("sending RustFS get_object request.");
+    debug!("sending RustFS get_object request.");
     let obj_res = obj_req
         .send()
         .await
         .map_err(|e| RustFSError::S3(e.into()))?; // send the request to RustFS
     let stored_etag = obj_res.e_tag.as_ref();
     if stored_etag != d_content.object_d.etag.as_ref() {
-        info!(
+        debug!(
             "etag of an object has changed, decrementing number of concurrent downloads for user...."
         );
         // the file has changed !!! start streaming from zero and ignore Range header , or just revoke the token from redis
-        return Err(ApiError::RustFs(RustFSError::ETagChanged));
+        return Err(RustFSError::ETagChanged);
     }
-    info!("preparing streaming headers.");
+    debug!("preparing streaming headers.");
     let content_length = obj_res.content_length().unwrap_or(0) as u64;
     let content_type = obj_res.content_type().unwrap_or("application/octet-stream"); // general unknown format , used as a valid fallback
 
@@ -182,21 +183,21 @@ async fn stream_file(
             .insert(header::CONTENT_RANGE, cr.parse().unwrap())
             .is_some()
     });
-    info!("transforming the RustFS body into an AsyncBufRead compatible to Axum Body stream.");
+    debug!("transforming the RustFS body into an AsyncBufRead compatible to Axum Body stream.");
     let stream = obj_res.body.into_async_read();
     let body = Body::from_stream(ReaderStream::new(stream));
-    info!("success file response.");
+    debug!("success file response.");
     Ok(resp_build.body(body).unwrap())
 }
-
+//------------------------------------------------------
 /// Responsible for compressing and streaming an entire folder.
 async fn stream_folder(
     rustfs_con: &Client,
     bucket_name: &str,
     mut object_key: String,
     f_name: &str,
-) -> Result<Response, ApiError> {
-    info!("start streaming the compressed folder.");
+) -> Result<Response, RustFSError> {
+    debug!("start streaming the compressed folder.");
     if !object_key.ends_with("/") {
         object_key.push('/');
     }
@@ -217,17 +218,16 @@ async fn stream_folder(
         .collect::<Vec<_>>();
 
     if objects.is_empty() {
-        let errora = RustFSError::EmptyFolder;
-        return Err(ApiError::RustFs(errora));
+        return Err(RustFSError::EmptyFolder);
         // nothing to stream !!
     }
-    info!("allocating a new channel buffer with 1MB in size.");
+    debug!("allocating a new channel buffer with 1MB in size.");
     let (writer, reader) = tokio::io::duplex(1048576);
     let client = rustfs_con.clone();
     let bucket = bucket_name.to_string();
 
     tokio::spawn(async move {
-        info!("start compressing arrived chunks of files from RustFS.");
+        debug!("start compressing arrived chunks of files from RustFS.");
         let e = create_zip(client, bucket, objects, writer)
             .await
             .map_err(RustFSError::Compress);
@@ -236,7 +236,7 @@ async fn stream_folder(
             true
         });
     });
-    info!("preparing the response headers.");
+    debug!("preparing the response headers.");
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());
     headers.insert(
@@ -245,7 +245,7 @@ async fn stream_folder(
             .parse()
             .unwrap(),
     );
-    info!("preparing the body and converting headers and body into response.");
+    debug!("preparing the body and converting headers and body into response.");
     let body = Body::from_stream(ReaderStream::new(reader));
     Ok((headers, body).into_response())
 }
@@ -268,10 +268,10 @@ async fn create_zip(
     objects: Vec<aws_sdk_s3::types::Object>,
     writer: tokio::io::DuplexStream,
 ) -> anyhow::Result<()> {
-    info!("connecting the duplex writer gate to zip file writter.");
+    debug!("connecting the duplex writer gate to zip file writter.");
     let mut zip = ZipFileWriter::new(writer.compat_write());
 
-    info!("looping over object names and fetching a streams from RustFS.");
+    debug!("looping over object names and fetching a streams from RustFS.");
     for obj in objects {
         let key = obj.key(); // we should not propogating error here !
         if let Some(key) = key {
@@ -298,6 +298,6 @@ async fn create_zip(
 
     // Finalize ZIP
     zip.close().await?;
-    info!("success streaming all required files.");
+    debug!("success streaming all required files.");
     Ok(())
 }
