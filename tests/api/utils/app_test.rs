@@ -2,21 +2,18 @@
 
 use axum::Router;
 use axum_extra::extract::cookie::Cookie;
-use axum_test::{TestResponse, TestServer};
+use axum_test::{TestRequest, TestResponse, TestServer};
 use family_cloud::AppState;
 use serde::Serialize;
 use serde_json::{Value, json};
-
-use crate::TestContainers;
 
 use super::MailHogClient;
 
 /// Main test harness for authentication endpoints
 pub struct AppTest {
-    pub containers: TestContainers,
     pub state: AppState,
     server: TestServer,
-    pub mailhog: MailHogClient,
+    pub mailhog: Option<MailHogClient>,
 }
 
 impl AppTest {
@@ -24,14 +21,11 @@ impl AppTest {
     pub fn new(
         app: Router,
         state: AppState,
-        mailhog_url: impl Into<String>,
-        containers: TestContainers,
+        mailhog: Option<MailHogClient>,
     ) -> anyhow::Result<Self> {
         let server = TestServer::new(app)?;
-        let mailhog = MailHogClient::new(mailhog_url);
 
         Ok(Self {
-            containers,
             state,
             server,
             mailhog,
@@ -175,24 +169,8 @@ impl AppTest {
             .add_header("Content-Type", "application/json")
             .await
     }
-
-    /// Helper: Get authorization header
-    pub fn auth_header(access_token: &str) -> (String, String) {
-        (
-            "Authorization".to_string(),
-            format!("Bearer {}", access_token),
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_auth_header() {
-        let (key, value) = AppTest::auth_header("test_token_123");
-        assert_eq!(key, "Authorization");
-        assert_eq!(value, "Bearer test_token_123");
+    /// Post /api/objects
+    pub fn upload(&self, jwt: &str) -> TestRequest {
+        self.server.post("/api/objects").authorization_bearer(jwt)
     }
 }

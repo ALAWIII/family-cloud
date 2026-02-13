@@ -8,6 +8,10 @@ use std::{env, time::Duration};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
 };
+use tokio::net::TcpStream;
+
+use crate::MailHogClient;
+
 use tokio::time::sleep;
 
 /// Manages all test infrastructure containers
@@ -28,10 +32,13 @@ const MAILHOG_SMTP_PORT: u16 = 1025;
 const MAILHOG_WEB_PORT: u16 = 8025;
 
 /// Initialize all test containers
-pub async fn init_test_containers() -> anyhow::Result<TestContainers> {
-    let mailhog = setup_mailhog_container().await?;
-
-    Ok(TestContainers { mailhog })
+pub async fn init_test_containers() -> anyhow::Result<MailHogClient> {
+    let m_container = setup_mailhog_container().await?;
+    let email_config = get_email_config(&m_container).await?;
+    family_cloud::init_mail_client(&email_config)?;
+    let mailhog_url = std::env::var("MAILHOG_URL")?;
+    let mailhog = MailHogClient::new(mailhog_url, email_config, m_container);
+    Ok(mailhog)
 }
 
 /// Setup MailHog container for email testing
@@ -110,8 +117,6 @@ fn get_db_user() -> String {
 fn get_db_password() -> SecretString {
     env::var("DB_PASSWORD").unwrap_or("testpass".into()).into()
 }
-
-use tokio::net::TcpStream;
 
 /// Wait until the host:port is accepting TCP connections.
 /// Returns an error if the timeout is reached.

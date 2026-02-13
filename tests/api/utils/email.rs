@@ -1,8 +1,9 @@
 //! Email verification and token extraction utilities
 
-use family_cloud::TokenType;
+use family_cloud::{EmailConfig, TokenType};
 use scraper::{Html, Selector};
 use serde_json::Value;
+use testcontainers::{ContainerAsync, GenericImage};
 use url::Url;
 
 /// Extracts tokens from email messages for verification flows
@@ -73,14 +74,22 @@ impl EmailTokenExtractor {
 
 /// MailHog API client for email testing
 pub struct MailHogClient {
+    pub email_conf: EmailConfig,
+    container: ContainerAsync<GenericImage>,
     client: reqwest::Client,
     url: String,
 }
 
 impl MailHogClient {
     /// Create new MailHog client
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        emailconf: EmailConfig,
+        container: ContainerAsync<GenericImage>,
+    ) -> Self {
         Self {
+            email_conf: emailconf,
+            container,
             client: reqwest::Client::new(),
             url: base_url.into(),
         }
