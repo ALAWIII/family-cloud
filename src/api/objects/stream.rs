@@ -69,7 +69,9 @@ pub async fn stream(
         .map_err(CRedisError::Connection)?;
 
     if active_count >= 10 {
-        return Err(ApiError::TooManyDownloads); // 429 status to many requests
+        let e = ApiError::TooManyDownloads;
+        error!("{}", e);
+        return Err(e); // 429 status to many requests
     }
     //-------------------------- adding token to set of tokens
     info!("incrementing the number of concurrent downloads for the user.");
@@ -126,7 +128,7 @@ async fn stream_file(
     download: bool,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the individual file.");
-    let range = headers
+    let range = headers //if Range header persists then use its value to resume download or stream.
         .get(header::RANGE)
         .map(|v| v.to_str())
         .transpose()
@@ -198,6 +200,9 @@ async fn stream_folder(
     f_name: &str,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the compressed folder.");
+    if object_key.starts_with("/") {
+        object_key.remove(0);
+    }
     if !object_key.ends_with("/") {
         object_key.push('/');
     }

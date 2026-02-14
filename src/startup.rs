@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use crate::{database::init_db, email::get_mail_client, init_rustfs, *};
 use axum::Router;
 use deadpool_redis::Pool as RedisPool;
@@ -43,7 +45,11 @@ async fn start_app_server(state: AppState) -> anyhow::Result<()> {
     let app_url = state.settings.app.url();
     let router = build_router(state)?;
     let listener = TcpListener::bind(app_url).await?;
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

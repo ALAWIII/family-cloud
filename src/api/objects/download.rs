@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Extension, Json, debug_handler,
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, Path, State},
 };
 use deadpool_redis::redis::AsyncTypedCommands;
 
@@ -37,7 +37,7 @@ pub async fn download(
     Extension(claims): Extension<Claims>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(appstate): State<AppState>,
-    Query(object_id): Query<Uuid>,
+    Path(object_id): Path<Uuid>,
 ) -> Result<Json<TokenPayload>, ApiError> {
     info!("recieving new download request.");
     // search database for file ownership and existance .
