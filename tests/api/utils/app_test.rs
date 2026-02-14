@@ -1,6 +1,6 @@
 //! Application test harness with HTTP request helpers
 
-use axum::Router;
+use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
 use family_cloud::AppState;
@@ -172,5 +172,22 @@ impl AppTest {
     /// Post /api/objects
     pub fn upload(&self, jwt: &str) -> TestRequest {
         self.server.post("/api/objects").authorization_bearer(jwt)
+    }
+    pub async fn download_token(&self, jwt: &str, file_id: &str) -> TestResponse {
+        self.server
+            .get(&format!("/api/objects/{}/download", file_id))
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn stream(&self, d_token: &str, download: bool, range: Option<&str>) -> TestResponse {
+        let mut req = self.server.get(&format!(
+            "/api/objects/stream?token={}&download={}",
+            d_token, download,
+        ));
+        if let Some(range) = range {
+            req = req.add_header(RANGE, range);
+        }
+
+        req.await
     }
 }
