@@ -32,8 +32,12 @@ pub(super) async fn refresh_token(
         .ok_or(ApiError::Unauthorized)?;
     let refresh_payload: UserTokenPayload = deserialize_content(&user_data)?;
     //-------------------------------
-    let jwt = create_jwt_access_token(&refresh_payload, 15 * 60, secret)
-        .map(|v| Json(TokenPayload { token: v.into() }))?;
+    let jwt = create_jwt_access_token(
+        &refresh_payload,
+        appstate.settings.token_options.jwt_token as i64 * 60,
+        secret,
+    )
+    .map(|v| Json(TokenPayload { token: v.into() }))?;
     info!("success jwt response.");
     Ok(jwt)
 }

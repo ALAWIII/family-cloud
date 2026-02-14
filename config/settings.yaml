@@ -28,3 +28,11 @@ secrets:
 redis:
   host: 127.0.0.1
   port: 6379
+token_options:
+  max_concurrent_download: 10
+  download_token_ttl: 1440 # 1day
+  change_email_token: 10 # 10 minutes
+  refresh_token: 43200 # 30 days
+  jwt_token: 15 # 15 minutes
+  password_reset_token: 5 # 5 minutes
+  signup_token: 5 # 5 minutes

@@ -37,11 +37,15 @@ pub(super) async fn login(
         &mut redis_con,
         &key,
         &ser_refresh_payload,
-        30 * 24 * 60 * 60,
+        appstate.settings.token_options.refresh_token * 60,
     ) // storing refresh token in redis to prevent a failure from not returning it to user
     .await?;
     info!("creating new jwt access token.");
-    let access_token = create_jwt_access_token(&refresh_payload, 60 * 15, secret)?;
+    let access_token = create_jwt_access_token(
+        &refresh_payload,
+        appstate.settings.token_options.jwt_token as i64 * 15,
+        secret,
+    )?;
     let user_profile = UserProfile::from(user);
     info!("login successfully");
     Ok(Json(LoginResponse {

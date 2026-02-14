@@ -59,7 +59,13 @@ pub async fn change_email(
     //--------------------storing token in redis ------------------
     info!("storing change email verification token in redis.");
     let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
-    store_token_redis(&mut redis_con, &key, &scontent, 10 * 60).await?;
+    store_token_redis(
+        &mut redis_con,
+        &key,
+        &scontent,
+        appstate.settings.token_options.change_email_token * 60,
+    )
+    .await?;
     //-------------------------------- sending email change verification to the new email ---------
     info!("sending email verification message to the new email address.");
     let verify_change_email_link = format!(
@@ -73,7 +79,7 @@ pub async fn change_email(
         .email_body(email_change_body(
             &claims.username,
             &verify_change_email_link,
-            10,
+            appstate.settings.token_options.change_email_token as u32,
             "Family Cloud",
         ))
         .send_email(mail_client.clone())
@@ -91,7 +97,7 @@ pub async fn change_email(
         .email_body(email_cancel_body(
             &claims.username,
             &cancel_change_email_link,
-            10,
+            appstate.settings.token_options.change_email_token as u32,
             "Family Cloud",
         ))
         .send_email(mail_client)

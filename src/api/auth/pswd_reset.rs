@@ -71,12 +71,23 @@ pub async fn password_reset(
     info!("storing the password reset token in redis with its user contents");
     let content = serialize_content(&user_info)?;
     let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
-    store_token_redis(&mut redis_con, &key, &content, 5 * 60).await?;
+    store_token_redis(
+        &mut redis_con,
+        &key,
+        &content,
+        appstate.settings.token_options.password_reset_token * 60,
+    )
+    .await?;
 
     //---------------------------------
     info!("Sending Password Reset email verification.");
     let reset_link = format!("{}/api/auth/password-reset?token={}", app_url, raw_token);
-    let body = password_reset_body(&user_info.username, &reset_link, 5, "family cloud");
+    let body = password_reset_body(
+        &user_info.username,
+        &reset_link,
+        appstate.settings.token_options.password_reset_token as u32,
+        "family cloud",
+    );
     EmailSender::default()
         .from_sender(from_sender)
         .email_recipient(pswd_info.email)

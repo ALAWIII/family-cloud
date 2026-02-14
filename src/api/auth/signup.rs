@@ -64,7 +64,7 @@ pub(super) async fn signup(
     let email_body = verification_body(
         &signup_info.username,
         &format!("{}/api/auth/signup?token={}", app_url, raw_token),
-        5,
+        appstate.settings.token_options.signup_token as u32,
         "family_cloud",
     );
     //---------------------------------
@@ -75,7 +75,7 @@ pub(super) async fn signup(
         &mut con,
         &create_redis_key(crate::TokenType::Signup, &hashed_token),
         &content,
-        5 * 60,
+        appstate.settings.token_options.signup_token * 60,
     )
     .await?;
     //-------------------------
