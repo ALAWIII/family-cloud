@@ -1,16 +1,27 @@
 mod auth;
 mod utils;
-use family_cloud::{LoginResponse, create_user_bucket, get_rustfs, init_tracing};
+use std::net::SocketAddr;
+
+use axum::extract::connect_info::MockConnectInfo;
+use family_cloud::{LoginResponse, TokenOptions, create_user_bucket, get_rustfs, init_tracing};
 pub use utils::*;
+mod download;
 mod upload;
 // ============================================================================
 // Shared Test Setup - Initialize All Infrastructure
 // ============================================================================
-
+use sha2::{Digest, Sha256};
+pub fn calculate_checksum(f: &[u8]) -> String {
+    // 2. Calculate SHA-256 checksum
+    let mut hasher = Sha256::new();
+    hasher.update(f);
+    let hash = hasher.finalize();
+    hex::encode(hash)
+}
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
-    init_tracing("familycloud", "family_cloud=debug,warn", "./family_cloud")?;
+    init_tracing("familycloud", "family_cloud=info,warn", "./family_cloud")?;
     let mut mailhog_server = None;
     if mhog_cont {
         mailhog_server = Some(init_test_containers().await?);
@@ -43,6 +54,15 @@ pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_
             rustfs: rustfs_config,
             secrets,
             redis: redis_config,
+            token_options: TokenOptions {
+                max_concurrent_download: 10,
+                download_token_ttl: 1440,
+                change_email_token: 10,
+                refresh_token: 43200,
+                jwt_token: 15,           //15 minutes
+                password_reset_token: 5, // 5 minutes
+                signup_token: 5,         // 5 minutes
+            },
         },
         db_pool,
         rustfs_con: family_cloud::get_rustfs()?,
@@ -55,7 +75,8 @@ pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_
     };
 
     let app_test = AppTest::new(
-        family_cloud::build_router(state.clone())?,
+        family_cloud::build_router(state.clone())?
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345)))),
         state.clone(),
         mailhog_server,
     )?;

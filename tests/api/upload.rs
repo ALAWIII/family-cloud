@@ -4,15 +4,8 @@ use axum::{
 };
 use family_cloud::ObjectRecord;
 
-use crate::setup_with_authenticated_user;
-use sha2::{Digest, Sha256};
-fn calculate_checksum(f: &[u8]) -> String {
-    // 2. Calculate SHA-256 checksum
-    let mut hasher = Sha256::new();
-    hasher.update(f);
-    let hash = hasher.finalize();
-    hex::encode(hash)
-}
+use crate::{calculate_checksum, setup_with_authenticated_user};
+
 //test uploading existed file or folder.
 #[tokio::test]
 async fn upload_file_with_all_headers() -> anyhow::Result<()> {
