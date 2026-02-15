@@ -18,7 +18,12 @@ aws-config = { version = "1.8.13", features = [
     "rustls",
 ] }
 aws-sdk-s3 = "1.122.0"
-axum = { version = "0.8.8", features = ["http2", "macros", "multipart"] }
+axum = { version = "0.8.8", features = [
+    "http2",
+    "macros",
+    "multipart",
+    "tokio",
+] }
 axum-extra = { version = "0.12.5", features = ["cookie"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.43", features = ["serde"] }
@@ -94,6 +99,7 @@ tokio-stream = { version = "0.1.18", features = ["sync"] }
 aws-smithy-types-convert = { version = "0.60.12", features = [
     "convert-chrono",
 ] }
+path-clean = "1.0.1"
 
 [dev-dependencies]
 tower = "0.5.2"
@@ -103,3 +109,4 @@ axum-test = "18.5.0"
 
 scraper = "0.25.0"
 regex = "1.12.2"
+zip = "8.0.0"
