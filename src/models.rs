@@ -205,7 +205,7 @@ impl UserTokenPayload {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ObjectRecord {
     // ===== Identity (DB authority) =====
     pub id: Uuid,
@@ -284,7 +284,7 @@ impl ObjectRecord {
         true
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default, PartialEq, Eq)]
 #[sqlx(type_name = "visibility")]
 #[sqlx(rename_all = "lowercase")]
 pub enum Visibility {
@@ -293,7 +293,7 @@ pub enum Visibility {
     Private,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default, PartialEq, Eq)]
 #[sqlx(type_name = "object_status")]
 #[sqlx(rename_all = "lowercase")]
 pub enum ObjectStatus {
