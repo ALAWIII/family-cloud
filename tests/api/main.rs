@@ -1,12 +1,15 @@
 mod auth;
 mod utils;
 use std::net::SocketAddr;
-
-use axum::extract::connect_info::MockConnectInfo;
-use family_cloud::{LoginResponse, TokenOptions, create_user_bucket, get_rustfs, init_tracing};
+mod metadata;
+use axum::{body::Bytes, extract::connect_info::MockConnectInfo};
+use family_cloud::{
+    LoginResponse, ObjectRecord, TokenOptions, create_user_bucket, get_rustfs, init_tracing,
+};
 pub use utils::*;
 mod download;
 mod upload;
+use axum::http::header::CONTENT_LENGTH;
 // ============================================================================
 // Shared Test Setup - Initialize All Infrastructure
 // ============================================================================
@@ -103,4 +106,18 @@ pub async fn setup_with_authenticated_user() -> anyhow::Result<(AppTest, TestAcc
     let login_data: LoginResponse = login_response.json();
 
     Ok((app, account, login_data))
+}
+async fn upload_file(app: &AppTest, f_full_path: &str, data: Vec<u8>, jwt: &str) -> ObjectRecord {
+    let checksum = calculate_checksum(&data);
+    let resp = app
+        .upload(jwt)
+        .add_header("Object-Type", "file")
+        .add_header("Object-Key", f_full_path)
+        .add_header("x-amz-checksum-sha256", &checksum)
+        .add_header(CONTENT_LENGTH, data.len())
+        .content_type("text/plain")
+        .bytes(Bytes::from(data))
+        .await;
+    resp.assert_status_success();
+    resp.json()
 }

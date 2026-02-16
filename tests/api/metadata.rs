@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{setup_with_authenticated_user, upload_file};
 use family_cloud::{ObjectRecord, UpdateMetadata};
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
 #[tokio::test]

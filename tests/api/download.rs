@@ -1,12 +1,9 @@
-use std::{io::Cursor, sync::Arc, time::Duration};
+use std::{io::Cursor, sync::Arc};
 
-use crate::{AppTest, calculate_checksum, setup_with_authenticated_user};
+use crate::{AppTest, setup_with_authenticated_user, upload_file};
 use axum::{
     body::Bytes,
-    http::{
-        StatusCode,
-        header::{CONTENT_DISPOSITION, CONTENT_LENGTH},
-    },
+    http::{StatusCode, header::CONTENT_DISPOSITION},
 };
 use family_cloud::{ObjectRecord, TokenPayload};
 use futures::future::join_all;
@@ -19,20 +16,6 @@ async fn upload_folder(app: &AppTest, f_full_path: &str, jwt: &str) -> ObjectRec
         .upload(jwt)
         .add_header("Object-Type", "folder")
         .add_header("Object-Key", f_full_path) // "banana/sandawitch"
-        .await;
-    resp.assert_status_success();
-    resp.json()
-}
-async fn upload_file(app: &AppTest, f_full_path: &str, data: Vec<u8>, jwt: &str) -> ObjectRecord {
-    let checksum = calculate_checksum(&data);
-    let resp = app
-        .upload(jwt)
-        .add_header("Object-Type", "file")
-        .add_header("Object-Key", f_full_path)
-        .add_header("x-amz-checksum-sha256", &checksum)
-        .add_header(CONTENT_LENGTH, data.len())
-        .content_type("text/plain")
-        .bytes(Bytes::from(data))
         .await;
     resp.assert_status_success();
     resp.json()
