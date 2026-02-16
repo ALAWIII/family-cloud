@@ -5,8 +5,8 @@ use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
 use crate::{
-    DatabaseConfig, DatabaseError, ObjectDownload, ObjectRecord, ObjectStatus, RustFSError, User,
-    UserStorageInfo,
+    DatabaseConfig, DatabaseError, ObjectDownload, ObjectRecord, ObjectStatus, RustFSError,
+    UpdateMetadata, User, UserStorageInfo,
 };
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
@@ -237,4 +237,63 @@ pub async fn get_user_available_storage(
     )
     .fetch_one(con)
     .await?)
+}
+pub async fn fetch_all_object_info(
+    con: &PgPool,
+    file_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<ObjectRecord>, DatabaseError> {
+    Ok(sqlx::query_as!(
+        ObjectRecord,
+        r#"
+        SELECT
+        id, user_id, object_key, size, etag, mime_type, last_modified,
+        created_at, checksum_sha256, custom_metadata, status as "status:_", visibility as "visibility:_", is_folder
+        FROM objects
+        WHERE id = $1 and user_id=$2 and status='active'
+        "#,
+        file_id,
+        user_id,
+    )
+    .fetch_optional(con)
+    .await?)
+}
+pub async fn update_object_metadata_db(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: Uuid,
+    new_metadata: UpdateMetadata, // Changed from struct to Value
+) -> Result<UpdateMetadata, DatabaseError> {
+    let rec = sqlx::query_as!(
+        UpdateMetadata,
+        // We use $1 directly. Since it's JSONB in Postgres, sqlx maps Value -> JSONB automatically.
+        r#"
+        UPDATE objects
+        SET custom_metadata = $1
+        WHERE id = $2 AND user_id = $3
+        RETURNING custom_metadata as "metadata"
+        "#,
+        new_metadata.metadata,
+        id,
+        user_id
+    )
+    .fetch_one(pool) // Will fail if ID not found (RowNotFound error)
+    .await?;
+
+    // Handle potential NULL from DB if column is nullable
+    Ok(rec)
+}
+
+pub async fn fetch_all_user_objects_ids(
+    con: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<Uuid>, DatabaseError> {
+    let ids: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT id FROM objects WHERE user_id=$1 AND status='active'",
+        user_id
+    )
+    .fetch_all(con)
+    .await?;
+
+    Ok(ids)
 }

@@ -3,9 +3,10 @@
 use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
-use family_cloud::AppState;
+use family_cloud::{AppState, UpdateMetadata};
 use serde::Serialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::MailHogClient;
 
@@ -189,5 +190,29 @@ impl AppTest {
         }
 
         req.await
+    }
+    pub async fn list_objects(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/objects")
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn get_metadata(&self, jwt: &str, id: Uuid) -> TestResponse {
+        self.server
+            .get(&format!("/api/objects/{}", id))
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn update_metadata(
+        &self,
+        jwt: &str,
+        id: Uuid,
+        cmetadata: &UpdateMetadata,
+    ) -> TestResponse {
+        self.server
+            .patch(&format!("/api/objects/{}", id))
+            .authorization_bearer(jwt)
+            .json(cmetadata)
+            .await
     }
 }
