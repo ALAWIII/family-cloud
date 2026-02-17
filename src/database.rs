@@ -5,8 +5,8 @@ use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
 use crate::{
-    DatabaseConfig, DatabaseError, ObjectDownload, ObjectRecord, ObjectStatus, RustFSError,
-    UpdateMetadata, User, UserStorageInfo,
+    DatabaseConfig, DatabaseError, ObjDelete, ObjectDownload, ObjectRecord, ObjectStatus,
+    RustFSError, UpdateMetadata, User, UserStorageInfo,
 };
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
@@ -296,4 +296,46 @@ pub async fn fetch_all_user_objects_ids(
     .await?;
 
     Ok(ids)
+}
+pub async fn mark_obj_as_deleted(con: &PgPool, id: Uuid) -> Result<(), DatabaseError> {
+    sqlx::query!("UPDATE objects SET status='deleted' WHERE id=$1 ", id)
+        .execute(con)
+        .await?;
+    Ok(())
+}
+pub async fn fetch_obj_info_to_delete(
+    con: &PgPool,
+    list_ids: &[Uuid],
+    user_id: Uuid,
+) -> Result<Vec<ObjDelete>, DatabaseError> {
+    let v = sqlx::query_as!(
+        ObjDelete,
+        "SELECT id,object_key,is_folder FROM objects WHERE id=ANY($1) AND user_id=$2 AND status='active'",
+        list_ids,
+        user_id
+    )
+    .fetch_all(con)
+    .await?;
+    Ok(v)
+}
+
+pub async fn fetch_files_of_folder_to_delete(
+    con: &PgPool,
+    folder_key: &str,
+    user_id: Uuid,
+) -> Result<Vec<ObjDelete>, DatabaseError> {
+    let v = sqlx::query_as!(
+        ObjDelete,
+        "SELECT id, object_key, is_folder
+         FROM objects
+         WHERE object_key LIKE $1 || '%'
+           AND user_id = $2
+           AND status = 'active'
+           AND is_folder=false",
+        folder_key,
+        user_id
+    )
+    .fetch_all(con)
+    .await?;
+    Ok(v)
 }

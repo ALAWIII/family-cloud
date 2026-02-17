@@ -23,12 +23,13 @@ pub use move_obj::*;
 //--------------------------------------objects manipulation ----------------------
 pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
     Router::new()
-        .route("/api/objects", get(list_objects).post(upload))
+        .route(
+            "/api/objects",
+            get(list_objects).post(upload).delete(delete),
+        )
         .route(
             "/api/objects/{id}",
-            get(get_metadata)
-                .patch(update_metadata)
-                .delete(delete_object),
+            get(get_metadata).patch(update_metadata),
         )
         .route("/api/objects/{id}/move", post(move_object))
         .route("/api/objects/{id}/copy", post(copy_object))

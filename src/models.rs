@@ -4,6 +4,7 @@ use std::{fmt::Display, str::FromStr};
 
 use chrono::DateTime;
 use chrono::{NaiveDateTime, Utc};
+use derivative::Derivative;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
@@ -397,4 +398,12 @@ impl Drop for CleanupGuard {
             }
         });
     }
+}
+#[derive(Debug, Serialize, Deserialize, Derivative, Clone)]
+#[derivative(Hash, PartialEq, Eq)]
+pub struct ObjDelete {
+    #[derivative(Hash, PartialEq)]
+    pub id: Uuid,
+    pub object_key: String,
+    pub is_folder: bool,
 }

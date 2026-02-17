@@ -18,4 +18,6 @@ pub enum RustFSError {
     S3(anyhow::Error),
     #[error("Upload error: {0}")]
     Upload(anyhow::Error),
+    #[error("Delete error: {0}")]
+    Delete(anyhow::Error),
 }

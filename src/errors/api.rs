@@ -43,6 +43,8 @@ pub enum ApiError {
     TooManyDownloads,
     #[error("requested object is not available.")]
     NotFound,
+    #[error("object was already deleted.")]
+    AlreadyDeleted,
 }
 
 impl IntoResponse for ApiError {
@@ -98,6 +100,7 @@ impl IntoResponse for ApiError {
             ApiError::TooManyDownloads => StatusCode::TOO_MANY_REQUESTS,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::CorruptedByte(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::AlreadyDeleted => StatusCode::NO_CONTENT,
         };
 
         status.into_response()
