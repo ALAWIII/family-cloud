@@ -1,9 +1,10 @@
 use crate::{
-    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, PendingAccount,
-    SignupRequest, TokenPayload, User, create_redis_key, create_user_bucket, decode_token,
-    delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
-    generate_token_bytes, get_redis_con, hash_password, hash_token, insert_new_account,
-    is_account_exist, serialize_content, store_token_redis, verification_body,
+    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, FolderRecord,
+    PendingAccount, SignupRequest, TokenPayload, User, create_redis_key, create_user_bucket,
+    decode_token, delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
+    generate_token_bytes, get_redis_con, hash_password, hash_token, insert_folder,
+    insert_new_account, insert_user_with_root_folder, is_account_exist, serialize_content,
+    store_token_redis, upsert_file, verification_body,
 };
 use axum::{
     Json, debug_handler,
@@ -12,6 +13,7 @@ use axum::{
 };
 use secrecy::ExposeSecret;
 use tracing::{info, instrument};
+use uuid::Uuid;
 
 /// if the email is new and not already used !
 fn create_pending_account(signup_info: &SignupRequest) -> Result<PendingAccount, CryptoError> {
@@ -116,15 +118,24 @@ pub async fn verify_signup(
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let account: PendingAccount = deserialize_content(&vdata)?;
+    info!(
+        "initalizing new User account instance and storing it into Postgres database with it's root folder."
+    );
 
-    info!("initalizing new User account instance and storing it into Postgres database.");
-    let user = User::new(account.username, account.email, account.password_hash);
-    insert_new_account(&user, &appstate.db_pool)
+    let user = User::new(
+        Uuid::new_v4(),
+        account.username,
+        account.email,
+        account.password_hash,
+    );
+    let folder = FolderRecord::new(user.id, None, "".into());
+    insert_user_with_root_folder(&user, &folder, &appstate.db_pool)
         .await
         .map_err(|e| match e {
             DatabaseError::Duplicate => ApiError::Conflict, // Edge case
             other => ApiError::Database(other),
         })?;
+    info!("creating user bucket in RustFS.");
     create_user_bucket(&appstate.rustfs_con, &user.id.to_string()).await?;
     info!("deleting or invalidating the signup verification token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
