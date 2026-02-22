@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Extension, Json, debug_handler,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
 };
 use deadpool_redis::redis::AsyncTypedCommands;
 
@@ -10,8 +10,9 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, CRedisError, Claims, DownloadTokenData, TokenPayload, TokenType,
-    create_redis_key, fetch_object_info, get_redis_con, serialize_content,
+    ApiError, AppState, CRedisError, Claims, DownloadTokenData, FileSystemObject, ObjectKindQuery,
+    TokenPayload, TokenType, create_redis_key, fetch_file_info, fetch_folder_info, get_redis_con,
+    serialize_content,
 };
 
 /// user -> request (object_id) -> server .
@@ -30,20 +31,31 @@ use crate::{
 #[instrument(skip_all,err,fields(
     user_id=%claims.sub,
     user_ip=%addr.ip(),
-    object_id=%object_id
+    object_id=%f_id,
+    kind=query.kind.to_string()
 ))]
 #[debug_handler]
 pub async fn download(
     Extension(claims): Extension<Claims>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(appstate): State<AppState>,
-    Path(object_id): Path<Uuid>,
+    Path(f_id): Path<Uuid>,
+    Query(query): Query<ObjectKindQuery>,
 ) -> Result<Json<TokenPayload>, ApiError> {
     info!("recieving new download request.");
     // search database for file ownership and existance .
-    let ob_info = fetch_object_info(&appstate.db_pool, object_id, claims.sub)
-        .await?
-        .ok_or(ApiError::NotFound)?; // if deleted(file_id) || ~ found(file_id) || ~ own(user_id,file_id) || error(db)   = return error(NotFound)
+    // if deleted(file_id) || ~ found(file_id) || ~ own(user_id,file_id) || error(db)   = return error(NotFound)
+    let obj: FileSystemObject = if query.kind.is_folder() {
+        fetch_folder_info(&appstate.db_pool, f_id, claims.sub)
+            .await?
+            .ok_or(ApiError::NotFound)?
+            .into()
+    } else {
+        fetch_file_info(&appstate.db_pool, f_id, claims.sub)
+            .await?
+            .ok_or(ApiError::NotFound)?
+            .into()
+    };
     info!("getting redis connection");
     // fetch redis for download:user_id and get the set of tokens .
     // if not exists ,it means that the user is not inserted into redis and it means that he has no downloads at all ! (0 downloads)
@@ -58,18 +70,18 @@ pub async fn download(
     let active_count = redis_con
         .hlen(&user_d_key)
         .await
-        .map_err(CRedisError::Connection)?;
+        .map_err(CRedisError::Connection)? as u64;
 
-    if active_count >= 10 {
+    if active_count >= appstate.settings.token_options.max_concurrent_download {
         return Err(ApiError::TooManyDownloads); // 429 status to many requests
     }
     //---------------------------
     info!("creating new 24h download token.");
-    let day = 24 * 60 * 60;
+    let day = appstate.settings.token_options.download_token_ttl * 60; // converts to seconds
     let new_d_token = Uuid::new_v4();
     let token_key = create_redis_key(TokenType::Download, &new_d_token.to_string());
     let token_data = DownloadTokenData {
-        object_d: ob_info,
+        object_d: obj,
         ip_address: Some(addr.ip().to_string()), // extract from request headers if needed
     };
     // insert the new download token with its associated info into redis.

@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
 
 use crate::{
-    ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, RustFSError, StreamQuery,
-    TokenType, create_redis_key, deserialize_content, fetch_redis_data, get_redis_con,
+    ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, FileDownload, FileRecord,
+    FolderRecord, RustFSError, StreamQuery, TokenType, create_redis_key, deserialize_content,
+    fetch_all_file_ids_paths, fetch_redis_data, get_redis_con,
 };
 
+use anyhow::anyhow;
 use async_zip::{Compression, ZipEntryBuilder, base::write::ZipFileWriter};
 use aws_sdk_s3::Client;
 use axum::{
@@ -19,12 +21,26 @@ use tokio_util::compat::TokioAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, instrument};
 
+use regex::Regex;
+use std::sync::LazyLock;
+
+static RANGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^bytes=(\d+-\d*|-\d+)(,(\d+-\d*|-\d+))*$").unwrap());
+fn parse_range(value: &str) -> anyhow::Result<&str> {
+    if !RANGE_RE.is_match(value) {
+        let e = anyhow!("failed to parse range: {}", value);
+        error!("{}", e);
+        return Err(e);
+    }
+    Ok(value)
+}
 /// # Streaming Supports :
 /// 1. individual files.
 /// 2. streaming videos/audios , streaming videos/audios as download requests.
 /// 3. streaming zipped folders with their contents recursively
-/// # object_key=folder
-/// - loop over the content of folder recursively , collect all nested files/objects and compress them all in one zip file then stream it.
+/// # object_kind=folder
+/// - fetch database recursively for all file_id=object_key and their name in order to name them in zip file ,
+/// - fetch all folder_parent names of all files to create the zip file strucutre !!
 /// - doesn't support pause/resuming.
 /// # object_key=file
 /// - stream it directly without compressing.
@@ -45,15 +61,15 @@ pub async fn stream(
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let d_content: DownloadTokenData = deserialize_content(&token_info)?;
+
     info!(
-        file_id = %d_content.object_d.id,
-        user_id = %d_content.object_d.user_id,
+        f_id = %d_content.object_d.id(),
+        user_id = d_content.object_d.bucket_name(),
         user_ip = %addr.ip(),
-        stored_ip=d_content.ip_address,
-        object_key = %d_content.object_d.object_key,
-        is_folder = d_content.object_d.is_folder,
+        stored_ip = d_content.ip_address,
+        is_folder = d_content.object_d.is_folder(),
         download_mode = stream_info.download.unwrap_or(false),
-        "Processing download request"
+        "Processing download request, object_key=f_id, user_id=bucket_name"
     );
     if Some(addr.ip().to_string()) != d_content.ip_address {
         error!("user ip address has changed.");
@@ -62,20 +78,20 @@ pub async fn stream(
 
     //--------------------------- checking number of concurrent downloads
     info!("getting the number of concurrent downloads user currently have.");
-    let user_d_key = create_redis_key(TokenType::Download, &d_content.object_d.user_id.to_string());
+    let user_d_key = create_redis_key(TokenType::Download, &d_content.object_d.bucket_name()); // user_id = bucket_name
     let active_count = redis_con
         .hlen(&user_d_key)
         .await
-        .map_err(CRedisError::Connection)?;
+        .map_err(CRedisError::Connection)? as u64;
 
-    if active_count >= 10 {
+    if active_count >= appstate.settings.token_options.max_concurrent_download {
         let e = ApiError::TooManyDownloads;
         error!("{}", e);
         return Err(e); // 429 status to many requests
     }
     //-------------------------- adding token to set of tokens
     info!("incrementing the number of concurrent downloads for the user.");
-    let day = 24 * 60 * 60;
+    let day = appstate.settings.token_options.download_token_ttl * 60;
     let _: () = redis::pipe()
         .atomic() // ensures all commands succeed or fail together
         .hset_nx(&user_d_key, &raw_token, 1) // 2) Add token to user's hash only if it doesn't exist , download:user_id , fields:  token:1
@@ -92,25 +108,30 @@ pub async fn stream(
     info!("Creating cleanup guard");
     let c_guard = CleanupGuard::new(appstate.redis_pool.clone(), stream_info.token, user_d_key);
     //--------------------------------- streaming object -------------------
-    let object_name = d_content.object_d.object_name();
-    let mut response = if d_content.object_d.is_folder {
+    let mut response = if d_content.object_d.is_folder() {
         // fetch all its name prefixes/postfixes .
         // loop over all those names and pipe them to a giant zip file.
         // success ? Ok(())
-        stream_folder(
-            &appstate.rustfs_con,
-            &d_content.object_d.user_id.to_string(),
-            d_content.object_d.object_key.to_string(),
-            &object_name,
-        )
-        .await
+        let folder = d_content.object_d.get_folder().unwrap();
+        info!("getting all file ids and their full paths to start streaming the whole folder.");
+        let files: Vec<FileDownload> =
+            fetch_all_file_ids_paths(&appstate.db_pool, folder.owner_id, folder.id)
+                .await
+                .inspect_err(|e| error!("{}", e))?;
+        stream_folder(appstate.rustfs_con.clone(), folder, files).await
     } else {
+        //if Range header persists then use its value to resume download or stream.
+        let range: Option<&str> = headers
+            .get(header::RANGE)
+            .and_then(|v| v.to_str().map(|v| v.trim()).ok())
+            .map(parse_range)
+            .transpose()?;
+
         stream_file(
-            headers,
-            &appstate,
-            &d_content,
-            &object_name,
+            appstate.rustfs_con.clone(),
+            d_content.object_d.get_file().unwrap(),
             stream_info.download.unwrap_or(false),
+            range,
         )
         .await
     }
@@ -121,24 +142,16 @@ pub async fn stream(
 }
 
 async fn stream_file(
-    headers: HeaderMap,
-    appstate: &AppState,
-    d_content: &DownloadTokenData,
-    f_name: &str,
+    rustfs_con: Client,
+    file: &FileRecord,
     download: bool,
+    range: Option<&str>,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the individual file.");
-    let range = headers //if Range header persists then use its value to resume download or stream.
-        .get(header::RANGE)
-        .map(|v| v.to_str())
-        .transpose()
-        .ok()
-        .flatten();
-    let mut obj_req = appstate
-        .rustfs_con // This is your Client
+    let mut obj_req = rustfs_con // This is your Client
         .get_object()
-        .bucket(d_content.object_d.user_id.to_string()) // Bucket = User ID
-        .key(&d_content.object_d.object_key);
+        .bucket(file.bucket_name()) // Bucket = User ID
+        .key(file.key()); // key = file_id
 
     if let Some(range) = range {
         debug!("setting incoming Range header value and direct it to RustFS.");
@@ -150,7 +163,7 @@ async fn stream_file(
         .await
         .map_err(|e| RustFSError::S3(e.into()))?; // send the request to RustFS
     let stored_etag = obj_res.e_tag.as_ref();
-    if stored_etag != d_content.object_d.etag.as_ref() {
+    if stored_etag != Some(&file.etag) {
         debug!(
             "etag of an object has changed, decrementing number of concurrent downloads for user...."
         );
@@ -158,17 +171,17 @@ async fn stream_file(
         return Err(RustFSError::ETagChanged);
     }
     debug!("preparing streaming headers.");
-    let content_length = obj_res.content_length().unwrap_or(0) as u64;
-    let content_type = obj_res.content_type().unwrap_or("application/octet-stream"); // general unknown format , used as a valid fallback
+    let content_length = obj_res.content_length().unwrap_or(file.size) as u64;
+    let content_type = &file.mime_type; // general unknown format , used as a valid fallback
 
     let status_code = range
         .map(|_| StatusCode::PARTIAL_CONTENT)
         .unwrap_or(StatusCode::OK);
 
     let stream_as = if download {
-        format!("attachment; filename=\"{}\"", f_name) // download directly
+        format!("attachment; filename=\"{}\"", file.name) // download directly
     } else {
-        format!("inline; filename=\"{}\"", f_name) // play it in browser or the required player
+        format!("inline; filename=\"{}\"", file.name) // play it in browser or the required player
     };
     let mut resp_build = Response::builder()
         .status(status_code)
@@ -194,46 +207,22 @@ async fn stream_file(
 //------------------------------------------------------
 /// Responsible for compressing and streaming an entire folder.
 async fn stream_folder(
-    rustfs_con: &Client,
-    bucket_name: &str,
-    mut object_key: String,
-    f_name: &str,
+    rustfs_con: Client,
+    folder: &FolderRecord,
+    files: Vec<FileDownload>,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the compressed folder.");
-    if object_key.starts_with("/") {
-        object_key.remove(0);
-    }
-    if !object_key.ends_with("/") {
-        object_key.push('/');
-    }
     // fetches a list of names that starts with a folder prefix
-    let name_list = rustfs_con
-        .list_objects_v2()
-        .bucket(bucket_name)
-        .prefix(&object_key)
-        .send()
-        .await
-        .map_err(|e| RustFSError::S3(e.into()))?;
-    // convert them into a list of objects and filter out the empty folders!
-    let objects = name_list
-        .contents()
-        .to_vec()
-        .into_iter()
-        .filter(|o| o.key().is_some_and(|k| !k.ends_with('/')))
-        .collect::<Vec<_>>();
-
-    if objects.is_empty() {
+    if files.is_empty() {
         return Err(RustFSError::EmptyFolder);
         // nothing to stream !!
     }
     debug!("allocating a new channel buffer with 1MB in size.");
     let (writer, reader) = tokio::io::duplex(1048576);
-    let client = rustfs_con.clone();
-    let bucket = bucket_name.to_string();
-
+    let bucket = folder.bucket_name();
     tokio::spawn(async move {
         debug!("start compressing arrived chunks of files from RustFS.");
-        let e = create_zip(client, bucket, objects, writer)
+        let e = create_zip(rustfs_con, bucket, files, writer)
             .await
             .map_err(RustFSError::Compress);
         _ = e.is_err_and(|e| {
@@ -246,9 +235,16 @@ async fn stream_folder(
     headers.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());
     headers.insert(
         header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}.zip\"", f_name)
-            .parse()
-            .unwrap(),
+        format!(
+            "attachment; filename=\"{}.zip\"",
+            if folder.name.is_empty() {
+                "archive"
+            } else {
+                &folder.name
+            }
+        )
+        .parse()
+        .unwrap(),
     );
     debug!("preparing the body and converting headers and body into response.");
     let body = Body::from_stream(ReaderStream::new(reader));
@@ -270,35 +266,32 @@ async fn stream_folder(
 async fn create_zip(
     rfs_client: Client,
     bucket: String,
-    objects: Vec<aws_sdk_s3::types::Object>,
+    files: Vec<FileDownload>,
     writer: tokio::io::DuplexStream,
 ) -> anyhow::Result<()> {
     debug!("connecting the duplex writer gate to zip file writter.");
     let mut zip = ZipFileWriter::new(writer.compat_write());
 
     debug!("looping over object names and fetching a streams from RustFS.");
-    for obj in objects {
-        let key = obj.key(); // we should not propogating error here !
-        if let Some(key) = key {
-            // Create ZIP entry with the same name of the object
-            let builder = ZipEntryBuilder::new(key.into(), Compression::Deflate);
-            // open the gate of giant zip file and set a new entry settings.
-            let mut entry_writer = zip.write_entry_stream(builder).await?;
+    for file in files {
+        // Create ZIP entry with the same name of the object
+        let builder = ZipEntryBuilder::new(file.zip_path_ref().into(), Compression::Deflate);
+        // open the gate of giant zip file and set a new entry settings.
+        let mut entry_writer = zip.write_entry_stream(builder).await?;
 
-            // Get S3 object
-            let response = rfs_client
-                .get_object()
-                .bucket(&bucket)
-                .key(key)
-                .send()
-                .await?;
-            // Stream S3 data into ZIP
-            let mut reader = response.body.into_async_read().compat();
-            // start copying the stream of arrived bytes from Rustfs response into the open gate.
-            futures::io::copy(&mut reader, &mut entry_writer).await?;
-            // Close entry
-            entry_writer.close().await?;
-        }
+        // Get S3 object
+        let response = rfs_client
+            .get_object()
+            .bucket(&bucket)
+            .key(file.key()) // key=file_id
+            .send()
+            .await?;
+        // Stream S3 data into ZIP
+        let mut reader = response.body.into_async_read().compat();
+        // start copying the stream of arrived bytes from Rustfs response into the open gate.
+        futures::io::copy(&mut reader, &mut entry_writer).await?;
+        // Close entry
+        entry_writer.close().await?;
     }
 
     // Finalize ZIP
