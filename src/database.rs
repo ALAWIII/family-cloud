@@ -1,13 +1,14 @@
 use std::sync::OnceLock;
 
+use crate::{
+    DatabaseConfig, DatabaseError, FileDownload, FileRecord, FolderRecord, UpdateMetadata, User,
+    UserStorageInfo,
+};
+use anyhow::anyhow;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
+use sqlx::{Postgres, Transaction};
 use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
-
-use crate::{
-    DatabaseConfig, DatabaseError, ObjDelete, ObjectDownload, ObjectRecord, ObjectStatus,
-    RustFSError, UpdateMetadata, User, UserStorageInfo,
-};
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
@@ -41,6 +42,56 @@ pub fn get_db() -> Result<PgPool, DatabaseError> {
         .cloned()
 }
 
+pub async fn insert_user_with_root_folder(
+    user: &User,
+    folder: &FolderRecord,
+    db_pool: &PgPool,
+) -> Result<(), DatabaseError> {
+    let mut tx: Transaction<'_, Postgres> =
+        db_pool.begin().await.map_err(DatabaseError::Connection)?;
+
+    // insert folder first (we need its id for users.root_folder)
+    sqlx::query!(
+        r#"INSERT INTO folders (id, owner_id, parent_id, name, created_at)
+           VALUES ($1, $2, $3, $4, $5)"#,
+        folder.id,
+        folder.owner_id,
+        folder.parent_id,
+        folder.name,
+        folder.created_at,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(DatabaseError::Connection)?;
+
+    // insert user referencing folder.id
+    sqlx::query!(
+        r#"INSERT INTO users
+           (id, username, email, password_hash, created_at,
+            storage_quota_bytes, storage_used_bytes, root_folder)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"#,
+        user.id,
+        user.username,
+        user.email,
+        user.password_hash,
+        user.created_at,
+        user.storage_quota_bytes,
+        user.storage_used_bytes,
+        folder.id, // set root_folder here
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        e.as_database_error()
+            .filter(|db_err| db_err.constraint() == Some("users_email_key"))
+            .map(|_| DatabaseError::Duplicate)
+            .unwrap_or(DatabaseError::Connection(e))
+    })?;
+
+    tx.commit().await.map_err(DatabaseError::Connection)?;
+
+    Ok(())
+}
 pub async fn insert_new_account(user: &User, db_pool: &PgPool) -> Result<(), DatabaseError> {
     debug!(
     user_id=%user.id,
@@ -48,15 +99,16 @@ pub async fn insert_new_account(user: &User, db_pool: &PgPool) -> Result<(), Dat
     email=user.email,
     "inserting new account user information into database");
     sqlx::query!(
-        "INSERT INTO users (id, username, email, password_hash, created_at, storage_quota_bytes, storage_used_bytes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        r#"INSERT INTO users (id, username, email, password_hash, created_at, storage_quota_bytes, storage_used_bytes,root_folder)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,$8)"#,
         user.id,
         user.username,
         user.email,
         user.password_hash,
         user.created_at,
         user.storage_quota_bytes ,
-        user.storage_used_bytes
+        user.storage_used_bytes,
+        user.root_folder
     )
     .execute(db_pool)
     .await.map_err(|e|{
@@ -81,7 +133,7 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
 
     sqlx::query_as!(
         User,
-        "SELECT id, username, email, password_hash, created_at,
+        "SELECT id,root_folder, username, email, password_hash, created_at,
                 storage_quota_bytes, storage_used_bytes
          FROM users WHERE email = $1",
         email
@@ -89,7 +141,9 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     .fetch_optional(con)
     .await
     .inspect_err(|e| error!("database error: {}", e))? // connection error propogation
-    .ok_or(DatabaseError::NotFound)
+    .ok_or(DatabaseError::NotFound(anyhow!(
+        "failed to fetch account information"
+    )))
     .inspect_err(|e| error!("{}", e))
     // if user not found !!
 }
@@ -157,75 +211,150 @@ pub async fn update_account_password(
 
 //------------------------------------------ database object download endpoint fetch ----------------------
 // FIX: Tell sqlx to treat this column as your Rust type 'ObjectStatus'
-pub async fn fetch_object_info(
+
+pub async fn fetch_file_info(
     con: &PgPool,
     file_id: Uuid,
-    user_id: Uuid,
-) -> Result<Option<ObjectDownload>, DatabaseError> {
-    Ok(sqlx::query_as!(
-        ObjectDownload,
+    owner_id: Uuid,
+) -> Result<Option<FileRecord>, DatabaseError> {
+    let rec = sqlx::query_as::<_, FileRecord>(
         r#"
-        SELECT
-            id,
-            user_id,
-            object_key,
-            is_folder,
-            etag,
-            status as "status:_",
-            size,
-            checksum_sha256
-        FROM objects
-        WHERE id = $1 and user_id=$2 and status='active'
+        SELECT *
+        FROM files
+        WHERE id = $1 AND owner_id = $2 AND status in ('active','copying')
         "#,
-        file_id,
-        user_id,
     )
+    .bind(file_id)
+    .bind(owner_id)
     .fetch_optional(con)
-    .await?)
+    .await?;
+
+    Ok(rec)
 }
-// When user explicitly creates a folder
-pub async fn insert_obj(con: &PgPool, obj: &ObjectRecord) -> Result<PgQueryResult, DatabaseError> {
+
+pub async fn fetch_folder_info(
+    con: &PgPool,
+    folder_id: Uuid,
+    owner_id: Uuid,
+) -> Result<Option<FolderRecord>, DatabaseError> {
+    let rec = sqlx::query_as::<_, FolderRecord>(
+        r#"
+        SELECT *
+        FROM folders
+        WHERE id = $1 AND owner_id = $2 AND status in ('active','copying')
+        "#,
+    )
+    .bind(folder_id)
+    .bind(owner_id)
+    .fetch_optional(con)
+    .await?;
+
+    Ok(rec)
+}
+
+pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResult, DatabaseError> {
     Ok(sqlx::query(
         r#"
-        INSERT INTO objects (
-            id, user_id, object_key, size, etag, mime_type, last_modified,
-            created_at, checksum_sha256, custom_metadata, status, visibility, is_folder
+        INSERT INTO files(
+            id, owner_id, parent_id, name, size, etag, mime_type,
+            last_modified, created_at, deleted_at, metadata, status, visibility, checksum
         )
-        VALUES (
+        VALUES(
             $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12, $13
+            $8, $9, $10, $11, $12, $13, $14
         )
+        ON CONFLICT (id) DO UPDATE SET
+            name          = EXCLUDED.name,
+            size          = EXCLUDED.size,
+            etag          = EXCLUDED.etag,
+            mime_type     = EXCLUDED.mime_type,
+            last_modified = EXCLUDED.last_modified,
+            deleted_at    = EXCLUDED.deleted_at,
+            metadata      = EXCLUDED.metadata,
+            status        = EXCLUDED.status,
+            visibility    = EXCLUDED.visibility,
+            checksum      = EXCLUDED.checksum
         "#,
     )
-    .bind(obj.id)
-    .bind(obj.user_id)
-    .bind(&obj.object_key)
-    .bind(obj.size)
-    .bind(&obj.etag)
-    .bind(&obj.mime_type)
-    .bind(obj.last_modified)
-    .bind(obj.created_at)
-    .bind(&obj.checksum_sha256)
-    .bind(&obj.custom_metadata)
-    .bind(&obj.status) // ObjectStatus works via sqlx::Type here
-    .bind(&obj.visibility)
-    .bind(obj.is_folder)
+    .bind(file.id)
+    .bind(file.owner_id)
+    .bind(file.parent_id)
+    .bind(&file.name)
+    .bind(file.size)
+    .bind(&file.etag)
+    .bind(&file.mime_type)
+    .bind(file.last_modified)
+    .bind(file.created_at)
+    .bind(file.deleted_at)
+    .bind(&file.metadata)
+    .bind(&file.status)
+    .bind(&file.visibility)
+    .bind(&file.checksum)
     .execute(con)
     .await?)
 }
-pub async fn is_object_exists(
+
+pub async fn insert_folder(
     con: &PgPool,
-    user_id: Uuid,
-    obj_key: &str,
+    folder: &FolderRecord,
+) -> Result<PgQueryResult, DatabaseError> {
+    Ok(sqlx::query(
+        r#"
+            INSERT INTO folders(
+            id, owner_id, parent_id, name, created_at, deleted_at, status, visibility
+            )
+            VALUES(
+            $1, $2, $3, $4, $5, $6, $7,$8 )
+            "#,
+    )
+    .bind(folder.id)
+    .bind(folder.owner_id)
+    .bind(folder.parent_id)
+    .bind(&folder.name)
+    .bind(folder.created_at)
+    .bind(folder.deleted_at)
+    .bind(&folder.status)
+    .bind(&folder.visibility)
+    .execute(con)
+    .await
+    .inspect_err(|e| error!("failed to insert folder: {}", e))?)
+}
+
+pub async fn is_file_exists(
+    con: &PgPool,
+    owner_id: Uuid,
+    parent_id: Uuid,
+    file_name: &str,
 ) -> Result<Option<Uuid>, DatabaseError> {
     Ok(sqlx::query_scalar!(
-        "SELECT id FROM objects WHERE user_id=$1 AND object_key=$2 AND status='active'",
-        user_id,
-        obj_key
+        "SELECT id
+        FROM files
+        WHERE parent_id=$1 AND owner_id=$2 AND status !='deleted' AND name=$3",
+        parent_id,
+        owner_id,
+        file_name,
     )
     .fetch_optional(con)
     .await?)
 }
+pub async fn is_folder_exists(
+    con: &PgPool,
+    owner_id: Uuid,
+    parent_id: Uuid,
+    folder_name: &str,
+) -> Result<Option<Uuid>, DatabaseError> {
+    Ok(sqlx::query_scalar!(
+        "SELECT id
+        FROM folders
+        WHERE parent_id=$1 AND owner_id=$2 AND status !='deleted' AND name=$3",
+        parent_id,
+        owner_id,
+        folder_name,
+    )
+    .fetch_optional(con)
+    .await?)
+}
+
 pub async fn get_user_available_storage(
     con: &PgPool,
     user_id: Uuid,
@@ -238,104 +367,96 @@ pub async fn get_user_available_storage(
     .fetch_one(con)
     .await?)
 }
-pub async fn fetch_all_object_info(
+
+// fetch folder/ file metadata
+
+pub async fn delete_folders(
     con: &PgPool,
-    file_id: Uuid,
-    user_id: Uuid,
-) -> Result<Option<ObjectRecord>, DatabaseError> {
-    Ok(sqlx::query_as!(
-        ObjectRecord,
+    owner_id: Uuid,
+    folders: &[Uuid],
+) -> Result<Vec<Uuid>, DatabaseError> {
+    let mut tx = con.begin().await?;
+
+    let query = include_str!("../db_queries/delete_folders.sql");
+
+    let files_id: Vec<Uuid> = sqlx::query_scalar(query)
+        .bind(folders)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(files_id)
+}
+pub async fn delete_files(
+    con: &PgPool,
+    owner_id: Uuid,
+    files: &[Uuid],
+) -> Result<Vec<Uuid>, DatabaseError> {
+    let mut tx = con.begin().await?;
+
+    let query = include_str!("../db_queries/delete_files.sql");
+
+    let files_id: Vec<Uuid> = sqlx::query_scalar(query)
+        .bind(files)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(files_id)
+}
+pub async fn fetch_all_user_object_ids(
+    con: &PgPool,
+    owner_id: Uuid,
+) -> Result<Vec<Uuid>, DatabaseError> {
+    Ok(sqlx::query_scalar!(
         r#"
-        SELECT
-        id, user_id, object_key, size, etag, mime_type, last_modified,
-        created_at, checksum_sha256, custom_metadata, status as "status:_", visibility as "visibility:_", is_folder
-        FROM objects
-        WHERE id = $1 and user_id=$2 and status='active'
+        SELECT id FROM files  WHERE owner_id = $1
+        UNION ALL
+        SELECT id FROM folders WHERE owner_id = $1
         "#,
-        file_id,
-        user_id,
+        owner_id
+    )
+    .fetch_all(con)
+    .await?
+    .into_iter()
+    .flatten()
+    .collect())
+}
+pub async fn update_file_metadata(
+    con: &PgPool,
+    owner_id: Uuid,
+    f_id: Uuid,
+    metadata: serde_json::Value,
+) -> Result<UpdateMetadata, DatabaseError> {
+    sqlx::query!(
+        r#"
+        UPDATE files
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $1
+        WHERE id = $2 AND owner_id = $3
+        RETURNING metadata
+        "#,
+        metadata,
+        f_id,
+        owner_id
     )
     .fetch_optional(con)
-    .await?)
+    .await?
+    .ok_or(DatabaseError::NotFound(anyhow!("update metadata faliled"))) // row didn't exist or wrong owner
+    .map(|v| UpdateMetadata::new(v.metadata.unwrap_or(metadata)))
 }
-pub async fn update_object_metadata_db(
-    pool: &PgPool,
-    id: Uuid,
-    user_id: Uuid,
-    new_metadata: UpdateMetadata, // Changed from struct to Value
-) -> Result<UpdateMetadata, DatabaseError> {
-    let rec = sqlx::query_as!(
-        UpdateMetadata,
-        // We use $1 directly. Since it's JSONB in Postgres, sqlx maps Value -> JSONB automatically.
-        r#"
-        UPDATE objects
-        SET custom_metadata = $1
-        WHERE id = $2 AND user_id = $3
-        RETURNING custom_metadata as "metadata"
-        "#,
-        new_metadata.metadata,
-        id,
-        user_id
-    )
-    .fetch_one(pool) // Will fail if ID not found (RowNotFound error)
-    .await?;
-
-    // Handle potential NULL from DB if column is nullable
-    Ok(rec)
-}
-
-pub async fn fetch_all_user_objects_ids(
+pub async fn fetch_all_file_ids_paths(
     con: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<Uuid>, DatabaseError> {
-    let ids: Vec<Uuid> = sqlx::query_scalar!(
-        "SELECT id FROM objects WHERE user_id=$1 AND status='active'",
-        user_id
-    )
-    .fetch_all(con)
-    .await?;
-
-    Ok(ids)
-}
-pub async fn mark_obj_as_deleted(con: &PgPool, id: Uuid) -> Result<(), DatabaseError> {
-    sqlx::query!("UPDATE objects SET status='deleted' WHERE id=$1 ", id)
-        .execute(con)
+    owner_id: Uuid,
+    folder_id: Uuid,
+) -> Result<Vec<FileDownload>, DatabaseError> {
+    let query = include_str!("../db_queries/stream_folder.sql");
+    let files = sqlx::query_as::<_, FileDownload>(query)
+        .bind(folder_id) // $1
+        .bind(owner_id) // $2
+        .fetch_all(con)
         .await?;
-    Ok(())
-}
-pub async fn fetch_obj_info_to_delete(
-    con: &PgPool,
-    list_ids: &[Uuid],
-    user_id: Uuid,
-) -> Result<Vec<ObjDelete>, DatabaseError> {
-    let v = sqlx::query_as!(
-        ObjDelete,
-        "SELECT id,object_key,is_folder FROM objects WHERE id=ANY($1) AND user_id=$2 AND status='active'",
-        list_ids,
-        user_id
-    )
-    .fetch_all(con)
-    .await?;
-    Ok(v)
-}
 
-pub async fn fetch_files_of_folder_to_delete(
-    con: &PgPool,
-    folder_key: &str,
-    user_id: Uuid,
-) -> Result<Vec<ObjDelete>, DatabaseError> {
-    let v = sqlx::query_as!(
-        ObjDelete,
-        "SELECT id, object_key, is_folder
-         FROM objects
-         WHERE object_key LIKE $1 || '%'
-           AND user_id = $2
-           AND status = 'active'
-           AND is_folder=false",
-        folder_key,
-        user_id
-    )
-    .fetch_all(con)
-    .await?;
-    Ok(v)
+    Ok(files)
 }
