@@ -3,8 +3,10 @@ mod utils;
 use std::net::SocketAddr;
 mod metadata;
 use axum::{body::Bytes, extract::connect_info::MockConnectInfo};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use family_cloud::{
-    LoginResponse, ObjectRecord, TokenOptions, create_user_bucket, get_rustfs, init_tracing,
+    FileRecord, FolderRecord, LoginResponse, TokenOptions, create_user_bucket, get_rustfs,
+    init_tracing,
 };
 pub use utils::*;
 mod download;
@@ -19,12 +21,12 @@ pub fn calculate_checksum(f: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(f);
     let hash = hasher.finalize();
-    hex::encode(hash)
+    STANDARD.encode(hash)
 }
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
-    init_tracing("familycloud", "family_cloud=info,warn", "./family_cloud")?;
+    init_tracing("familycloud", "family_cloud=debug,warn", "./family_cloud")?;
     let mut mailhog_server = None;
     if mhog_cont {
         mailhog_server = Some(init_test_containers().await?);
@@ -107,17 +109,33 @@ pub async fn setup_with_authenticated_user() -> anyhow::Result<(AppTest, TestAcc
 
     Ok((app, account, login_data))
 }
-async fn upload_file(app: &AppTest, f_full_path: &str, data: Vec<u8>, jwt: &str) -> ObjectRecord {
+async fn upload_file(
+    app: &AppTest,
+    f_name: &str,
+    parent_id: &str,
+    data: Vec<u8>,
+    jwt: &str,
+) -> FileRecord {
     let checksum = calculate_checksum(&data);
     let resp = app
-        .upload(jwt)
+        .upload(jwt, parent_id)
         .add_header("Object-Type", "file")
-        .add_header("Object-Key", f_full_path)
+        .add_header("Object-Name", f_name)
         .add_header("x-amz-checksum-sha256", &checksum)
         .add_header(CONTENT_LENGTH, data.len())
         .content_type("text/plain")
         .bytes(Bytes::from(data))
         .await;
     resp.assert_status_success();
+    resp.json()
+}
+async fn upload_folder(app: &AppTest, f_name: &str, parent_id: &str, jwt: &str) -> FolderRecord {
+    let resp = app
+        .upload(jwt, parent_id)
+        .add_header("Object-Type", "folder")
+        .add_header("Object-Name", f_name) // "banana/sandawitch"
+        .await;
+    resp.assert_status_success();
+
     resp.json()
 }
