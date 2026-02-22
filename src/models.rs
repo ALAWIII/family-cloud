@@ -1,14 +1,14 @@
-use std::ffi::OsStr;
-use std::path::Path;
-use std::{fmt::Display, str::FromStr};
-
+use axum::Json;
+use axum::response::IntoResponse;
 use chrono::DateTime;
+use chrono::SubsecRound;
 use chrono::{NaiveDateTime, Utc};
 use derivative::Derivative;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::prelude::FromRow;
+use std::{fmt::Display, str::FromStr};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -17,6 +17,7 @@ use crate::{decrement_concurrent_download, get_redis_con};
 #[derive(Debug, Deserialize, Serialize, FromRow)]
 pub struct User {
     pub id: Uuid,
+    pub root_folder: Option<Uuid>,
     pub username: String,
     pub email: String,
     pub password_hash: String,
@@ -26,9 +27,10 @@ pub struct User {
 }
 
 impl User {
-    pub fn new(username: String, email: String, password_hash: String) -> Self {
+    pub fn new(id: Uuid, username: String, email: String, password_hash: String) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            root_folder: None,
+            id,
             username,
             email,
             password_hash,
@@ -36,6 +38,9 @@ impl User {
             storage_quota_bytes: 2147483648,
             storage_used_bytes: 0,
         }
+    }
+    pub fn set_root_folder(&mut self, f_id: Uuid) {
+        self.root_folder = Some(f_id);
     }
 
     pub fn set_storage_quota_bytes(&mut self, sqb: i64) {
@@ -57,6 +62,7 @@ pub struct UserProfile {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+    pub root_folder: Option<Uuid>,
     pub created_at: NaiveDateTime,
     pub storage_quota_bytes: i64,
     pub storage_used_bytes: i64,
@@ -67,6 +73,7 @@ impl From<User> for UserProfile {
             id: user.id,
             username: user.username,
             email: user.email,
+            root_folder: user.root_folder,
             created_at: user.created_at,
             storage_quota_bytes: user.storage_quota_bytes,
             storage_used_bytes: user.storage_used_bytes,
@@ -205,86 +212,8 @@ impl UserTokenPayload {
         }
     }
 }
+//-------------------------------------------- objects (files,folders) models.---
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct ObjectRecord {
-    // ===== Identity (DB authority) =====
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub object_key: String, // e.g. "/shawarma/potato.txt" or "/shawarma/folder/"
-
-    // ===== RustFS technical metadata (OPTIONAL for folders) =====
-    pub size: Option<i64>,                    // None for folders
-    pub etag: Option<String>,                 // None for folders
-    pub mime_type: Option<String>,            // None for folders
-    pub last_modified: Option<DateTime<Utc>>, // None for folders
-
-    // ===== System / business metadata =====
-    pub created_at: DateTime<Utc>,
-    pub visibility: Visibility,
-    pub status: ObjectStatus,
-
-    // ===== Optional / advanced (OPTIONAL for folders) =====
-    pub checksum_sha256: Option<String>, // None for folders
-    pub custom_metadata: Option<serde_json::Value>,
-
-    // ===== NEW: Folder-specific =====
-    pub is_folder: bool, // Distinguish file vs folder
-}
-impl ObjectRecord {
-    pub fn new(user_id: Uuid, obj_key: &str, is_folder: bool) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            user_id,
-            object_key: obj_key.into(),
-            is_folder,
-            ..Default::default()
-        }
-    }
-    pub fn bucket_name(&self) -> String {
-        self.user_id.to_string()
-    }
-    pub fn size(&mut self, s: i64) {
-        self.size = Some(s);
-    }
-    pub fn object_key(&mut self, key: impl Into<String>) {
-        self.object_key = key.into();
-    }
-    pub fn etag(&mut self, e: impl Into<String>) {
-        self.etag = Some(e.into());
-    }
-    pub fn mime_type(&mut self, m: impl Into<String>) {
-        self.mime_type = Some(m.into())
-    }
-    pub fn last_modified(&mut self, ldate: DateTime<Utc>) {
-        self.last_modified = Some(ldate);
-    }
-    pub fn created_at(&mut self, cat: DateTime<Utc>) {
-        self.created_at = cat;
-    }
-    pub fn visibility(&mut self, v: Visibility) {
-        self.visibility = v;
-    }
-    pub fn checksum_sha256(&mut self, c: impl Into<String>) {
-        self.checksum_sha256 = Some(c.into());
-    }
-    pub fn status(&mut self, s: ObjectStatus) {
-        self.status = s;
-    }
-    pub fn is_folder(&mut self, b: bool) {
-        self.is_folder = b;
-    }
-    pub fn add_metadata(&mut self, m: Value) -> bool {
-        if let Some(v) = self.custom_metadata.as_mut() {
-            return v.as_array_mut().is_some_and(|a| {
-                a.push(m);
-                true
-            });
-        }
-        self.custom_metadata = Some(serde_json::Value::from([m]));
-        true
-    }
-}
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, Default, PartialEq, Eq)]
 #[sqlx(type_name = "visibility")]
 #[sqlx(rename_all = "lowercase")]
@@ -300,38 +229,106 @@ pub enum Visibility {
 pub enum ObjectStatus {
     #[default]
     Active,
+    Deleting,
     Deleted,
+    Uploading,
+    Copying,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
-pub struct ObjectDownload {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub is_folder: bool,
-    pub object_key: String,
-    pub status: ObjectStatus,
-    pub size: Option<i64>,
-    pub etag: Option<String>,
-    pub checksum_sha256: Option<String>,
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum FileSystemObject {
+    Folder(FolderRecord),
+    File(FileRecord),
 }
-impl ObjectDownload {
-    pub fn object_name(&self) -> String {
-        let path = Path::new(&self.object_key);
-        path.file_name()
-            .unwrap_or(OsStr::new("download"))
-            .to_string_lossy()
-            .to_string()
+impl FileSystemObject {
+    pub fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder(_))
+    }
+
+    pub fn get_folder(&self) -> Option<&FolderRecord> {
+        match self {
+            Self::Folder(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    pub fn get_file(&self) -> Option<&FileRecord> {
+        match self {
+            Self::File(f) => Some(f),
+            _ => None,
+        }
+    }
+    pub fn owner_id(&self) -> Uuid {
+        match self {
+            Self::Folder(f) => f.owner_id,
+            Self::File(f) => f.owner_id,
+        }
+    }
+
+    pub fn id(&self) -> Uuid {
+        match self {
+            Self::Folder(f) => f.id,
+            Self::File(f) => f.id,
+        }
+    }
+    pub fn key(&self) -> String {
+        self.id().to_string()
+    }
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Folder(f) => &f.name,
+            Self::File(f) => &f.name,
+        }
+    }
+
+    pub fn created_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::Folder(f) => f.created_at,
+            Self::File(f) => f.created_at,
+        }
+    }
+
+    pub fn visibility(&self) -> &Visibility {
+        match self {
+            Self::Folder(f) => &f.visibility,
+            Self::File(f) => &f.visibility,
+        }
+    }
+
+    pub fn status(&self) -> &ObjectStatus {
+        match self {
+            Self::Folder(f) => &f.status,
+            Self::File(f) => &f.status,
+        }
+    }
+
+    pub fn bucket_name(&self) -> String {
+        match self {
+            Self::Folder(f) => f.bucket_name(),
+            Self::File(f) => f.bucket_name(),
+        }
     }
 }
-
+impl From<FolderRecord> for FileSystemObject {
+    fn from(value: FolderRecord) -> Self {
+        Self::Folder(value)
+    }
+}
+impl From<FileRecord> for FileSystemObject {
+    fn from(value: FileRecord) -> Self {
+        Self::File(value)
+    }
+}
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DownloadTokenData {
     #[serde(flatten)]
-    pub object_d: ObjectDownload,
+    pub object_d: FileSystemObject,
     pub ip_address: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "object_kind_type", rename_all = "PascalCase")]
+#[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
     File,
     Folder,
@@ -406,4 +403,156 @@ pub struct ObjDelete {
     pub id: Uuid,
     pub object_key: String,
     pub is_folder: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, FromRow)]
+pub struct FileRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub parent_id: Uuid,
+    pub name: String,
+    pub size: i64,
+    pub etag: String,
+    pub mime_type: String,
+    pub last_modified: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub metadata: Option<serde_json::Value>,
+    pub status: ObjectStatus,
+    pub visibility: Visibility,
+    pub checksum: Option<String>,
+}
+
+impl FileRecord {
+    pub fn new(owner_id: Uuid, parent_id: Uuid, name: String) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            owner_id,
+            parent_id,
+            name,
+            ..Default::default()
+        }
+    }
+    pub fn normalize_dates(&mut self) {
+        self.last_modified = self.last_modified.trunc_subsecs(6);
+        self.created_at = self.created_at.trunc_subsecs(6);
+        self.deleted_at = self.deleted_at.map(|t| t.trunc_subsecs(6));
+    }
+    pub fn key(&self) -> String {
+        self.id.to_string()
+    }
+    pub fn bucket_name(&self) -> String {
+        self.owner_id.to_string()
+    }
+    pub fn size(&mut self, s: i64) {
+        self.size = s;
+    }
+    pub fn name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+    }
+    pub fn etag(&mut self, e: impl Into<String>) {
+        self.etag = e.into();
+    }
+    pub fn mime_type(&mut self, m: impl Into<String>) {
+        self.mime_type = m.into();
+    }
+    pub fn last_modified(&mut self, ldate: DateTime<Utc>) {
+        self.last_modified = ldate;
+    }
+    pub fn created_at(&mut self, cat: DateTime<Utc>) {
+        self.created_at = cat;
+    }
+    pub fn visibility(&mut self, v: Visibility) {
+        self.visibility = v;
+    }
+
+    pub fn status(&mut self, s: ObjectStatus) {
+        self.status = s;
+    }
+    pub fn checksum(&mut self, c: &str) {
+        self.checksum = Some(c.into());
+    }
+    pub fn add_metadata(&mut self, m: Value) -> bool {
+        if let Some(v) = self.metadata.as_mut() {
+            return v.as_array_mut().is_some_and(|a| {
+                a.push(m);
+                true
+            });
+        }
+        self.metadata = Some(serde_json::Value::from([m]));
+        true
+    }
+}
+impl IntoResponse for FileRecord {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, FromRow)]
+pub struct FolderRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub parent_id: Option<Uuid>, // folder
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub status: ObjectStatus,
+    pub visibility: Visibility,
+}
+impl FolderRecord {
+    pub fn new(owner_id: Uuid, parent_id: Option<Uuid>, name: String) -> Self {
+        let f_id = Uuid::new_v4();
+        Self {
+            id: f_id,
+            owner_id,
+            parent_id,
+            name,
+            ..Default::default()
+        }
+    }
+    pub fn normalize_dates(&mut self) {
+        self.created_at = self.created_at.trunc_subsecs(6);
+        self.deleted_at = self.deleted_at.map(|t| t.trunc_subsecs(6));
+    }
+    pub fn bucket_name(&self) -> String {
+        self.owner_id.to_string()
+    }
+
+    pub fn name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+    }
+
+    pub fn created_at(&mut self, cat: DateTime<Utc>) {
+        self.created_at = cat;
+    }
+    pub fn visibility(&mut self, v: Visibility) {
+        self.visibility = v;
+    }
+
+    pub fn status(&mut self, s: ObjectStatus) {
+        self.status = s;
+    }
+}
+impl IntoResponse for FolderRecord {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ObjectKindQuery {
+    pub kind: ObjectKind,
+}
+#[derive(Debug, Deserialize, FromRow)]
+pub struct FileDownload {
+    pub file_id: Uuid,
+    pub zip_path: String,
+}
+impl FileDownload {
+    pub fn key(&self) -> String {
+        self.file_id.to_string()
+    }
+    pub fn zip_path_ref(&self) -> &str {
+        &self.zip_path
+    }
 }
