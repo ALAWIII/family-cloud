@@ -1,12 +1,15 @@
 use crate::{
-    ApiError, AppState, Claims, ObjectKind, ObjectRecord, RustFSError, fetch_object_metadata,
-    get_user_available_storage, insert_obj, is_object_exists,
+    ApiError, AppState, Claims, FileRecord, FolderRecord, ObjectKind, ObjectStatus, RustFSError,
+    get_user_available_storage, insert_folder, is_file_exists, is_folder_exists, upsert_file,
+    validate_display_name,
 };
 use anyhow::anyhow;
 use aws_sdk_s3::Client;
+use aws_sdk_s3::operation::complete_multipart_upload::CompleteMultipartUploadOutput;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
-use axum::Json;
 use axum::body::Bytes;
+use axum::extract::Query;
+use axum::response::IntoResponse;
 use axum::{
     Extension,
     body::Body,
@@ -16,9 +19,14 @@ use axum::{
         header::{CONTENT_LENGTH, CONTENT_TYPE},
     },
 };
+
+use base64::{Engine, engine::general_purpose::STANDARD};
+use chrono::Utc;
 use futures::future::join_all;
-use path_clean::PathClean;
-use std::path::Path;
+
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
+use uuid::Uuid;
 
 use mime_guess::mime;
 use serde::{Deserialize, Serialize};
@@ -45,47 +53,52 @@ pub struct UserStorageInfo {
 #[derive(Debug)]
 struct UploadHeaders {
     pub object_kind: ObjectKind,
-    pub object_key: String,
+    pub f_name: String,
     pub content_type: Option<String>,
     pub content_length: Option<i64>,
     pub checksum: Option<String>,
 }
-
+pub struct StreamResult {
+    pub checksum: String,
+    pub file_size: usize,
+}
+#[derive(Debug, Deserialize)]
+pub struct UploadQuery {
+    pub parent_id: Uuid,
+}
 /// # WorkFlow
-/// -
+/// consider refactor this function and using Compensating Transaction/Command design pattrens.
 #[instrument(skip_all, fields(
     user_id=%claims.sub,
     username=claims.username
 ))]
 pub async fn upload(
+    Query(upq): Query<UploadQuery>,
     State(appstate): State<AppState>,
     Extension(claims): Extension<Claims>,
     headers: HeaderMap,
-    body: Body,
-) -> Result<(StatusCode, Json<ObjectRecord>), ApiError> {
+    body: Body, // parent_id , file_name
+) -> Result<impl IntoResponse, ApiError> {
     info!("uploading new file.");
     let uphead = extract_headers(&headers).inspect_err(|e| error!("{}", e))?;
-    info!("validating object key path structure.");
-    validate_file_path(&claims.sub.to_string(), &uphead.object_key)
-        .inspect_err(|e| error!("{}", e))?;
     // checking whether the object already existed in RustFS and database.
-    if let Some(obj) = is_object_exists(&appstate.db_pool, claims.sub, &uphead.object_key)
-        .await
-        .inspect_err(|e| error!("{}", e))?
-    {
-        error!(object_id=%obj,object_kind=%uphead.object_kind,object_key=uphead.object_key,"already existed and active in the database.");
-        return Err(ApiError::Conflict);
-    }
-    //-------------------------------
-    let mut obj = ObjectRecord::new(claims.sub, &uphead.object_key, true);
     if uphead.object_kind.is_folder() {
+        if let Some(id) =
+            is_folder_exists(&appstate.db_pool, claims.sub, upq.parent_id, &uphead.f_name)
+                .await
+                .inspect_err(|e| error!("{}", e))?
+        {
+            error!(folder_id=%id,object_kind=%uphead.object_kind,folder_name=uphead.f_name,"already existed and active in the database.");
+            return Err(ApiError::Conflict);
+        }
         info!("creating new folder.");
+        let folder = FolderRecord::new(claims.sub, Some(upq.parent_id), uphead.f_name);
         // if obj_kind is folder -> create the folder quickly -> grab the metadata store in database -> and return success
-        insert_obj(&appstate.db_pool, &obj)
+        insert_folder(&appstate.db_pool, &folder)
             .await
             .inspect_err(|e| error!("{}", e))?;
         info!("folder created successfully.");
-        return Ok((StatusCode::CREATED, Json(obj)));
+        return Ok((StatusCode::CREATED, folder).into_response());
     }
 
     //--------------- check the available space user have . space_used + content_length >= maximum_space -> reject the upload. ---------------
@@ -94,76 +107,112 @@ pub async fn upload(
         .await
         .inspect_err(|e| error!("{}", e))?;
     if s_info.storage_used_bytes + uphead.content_length.unwrap_or(0) > s_info.storage_quota_bytes {
-        return Err(ApiError::Unauthorized);
+        return Err(ApiError::ObjectTooLarge);
     }
-    let bucket = obj.bucket_name();
+    //-------------------------------- check if file exists under the same parent_id -----------------------
+    if let Some(id) = is_file_exists(&appstate.db_pool, claims.sub, upq.parent_id, &uphead.f_name)
+        .await
+        .inspect_err(|e| error!("{}", e))?
+    {
+        error!(file_id=%id,kind=%uphead.object_kind,file_name=uphead.f_name,"already existed and active in the database.");
+        return Err(ApiError::Conflict);
+    }
+
     //-------------------------- update object metadata ----------------------
     info!("preparing new file object instance with metadata.");
-    obj.is_folder(false);
-    obj.mime_type(uphead.content_type.unwrap());
-    obj.checksum_sha256(uphead.checksum.unwrap());
+    let mut file = FileRecord::new(claims.sub, upq.parent_id, uphead.f_name);
+    file.mime_type(uphead.content_type.unwrap());
+    file.checksum(&uphead.checksum.unwrap());
+    file.status(crate::ObjectStatus::Uploading);
+    upsert_file(&appstate.db_pool, &file)
+        .await
+        .inspect_err(|e| error!("database inserting failed: {}", e))?;
+    let bucket = file.bucket_name();
     info!("creating new multipart upload session.");
     // if obj_kind is file -> open the body and start recive the stream of bytes for that file -> pipe directly to RustFS -> return metadata->store in database -> response success.
-    let upload_id = create_multipart_upload(
-        &appstate.rustfs_con,
-        &bucket,
-        &obj.object_key,
-        obj.mime_type.as_ref().unwrap(),
-    )
-    .await
-    .inspect_err(|e| error!("{}", e))?;
+    let upload_id =
+        create_multipart_upload(&appstate.rustfs_con, &bucket, file.id, &file.mime_type)
+            .await
+            .inspect_err(|e| error!("{}", e))?;
 
     // ---------------------- streaming the file
     info!("start streaming the file to RustFS object storage.");
-    let rs = stream_file_rustfs_parallel(
-        &appstate.rustfs_con,
-        body,
-        &bucket,
-        &obj.object_key,
-        &upload_id,
-    )
-    .await
-    .inspect_err(|e| error!("{}", e));
-    //-------- abort on error --------------
-    if let Err(r) = rs {
-        info!("aborting the upload.");
-        abort_upload(&appstate.rustfs_con, &bucket, &obj.object_key, &upload_id)
+    let (completed_parts, stream_result) =
+        match stream_file_rustfs_parallel(&appstate.rustfs_con, body, &bucket, file.id, &upload_id)
             .await
-            .inspect_err(|e| error!("{}", e))?;
-        return Err(r)?;
+            .inspect_err(|e| error!("{}", e))
+        {
+            Ok(r) => r,
+            Err(e) => {
+                info!("aborting the upload.");
+                abort_and_cleanup(
+                    &appstate.db_pool,
+                    &appstate.rustfs_con,
+                    &mut file,
+                    &bucket,
+                    &upload_id,
+                )
+                .await?;
+                return Err(e.into());
+            }
+        };
+    info!("validate checksum.");
+    if Some(&stream_result.checksum) != file.checksum.as_ref() {
+        error!(
+            expected = ?file.checksum,
+            actual = stream_result.checksum,
+            "checksum mismatch"
+        );
+        abort_and_cleanup(
+            &appstate.db_pool,
+            &appstate.rustfs_con,
+            &mut file,
+            &bucket,
+            &upload_id,
+        )
+        .await?;
+        return Err(ApiError::ChecksumMismatch); // 422 unproccessible entity
     }
-    //--------------------- ask rustfs to complement the metadata of the object------------------
-    info!("fetch object metadata from RustFS.");
-    fetch_object_metadata(&appstate.rustfs_con, &mut obj)
-        .await
-        .inspect_err(|e| error!("{}", e))?;
+    info!("check real usage of file.");
+    if s_info.storage_used_bytes + stream_result.file_size as i64 > s_info.storage_quota_bytes {
+        abort_and_cleanup(
+            &appstate.db_pool,
+            &appstate.rustfs_con,
+            &mut file,
+            &bucket,
+            &upload_id,
+        )
+        .await?;
+        return Err(ApiError::ObjectTooLarge);
+    }
+    debug!("commiting and validating the uploaded file.");
+    // Complete upload
+    let metadata = complete_upload(
+        &appstate.rustfs_con,
+        &bucket,
+        &file.id.to_string(),
+        &upload_id,
+        completed_parts,
+    ) // we can use abort_on_cleanup if error!
+    .await?;
+    //--------------------- ask rustfs to complement the metadata of the object, sets (last_modified,etag,size)------------------
+    info!("update object metadata with etag RustFS.");
+    file.etag(metadata.e_tag().unwrap_or(""));
+    file.last_modified(Utc::now());
+    file.size(stream_result.file_size as i64);
+    file.status(ObjectStatus::Active);
+
     //-------- insert the object(file) information into the database-----------------------
-    info!("inserting new object with metadata into database.");
-    insert_obj(&appstate.db_pool, &obj)
+    info!("updating file metadata info in database.");
+    // if this fails → file exists in RustFS but DB not updated
+    // not critical — can be reconciled later, or add delete_object fallback
+    upsert_file(&appstate.db_pool, &file)
         .await
-        .inspect_err(|e| error!("database inserting failed: {}", e))?;
-    info!("new file created successfully.");
-    Ok((StatusCode::CREATED, Json(obj)))
+        .inspect_err(|e| error!("database updating metadata failed: {}", e))?;
+    info!("new file uploaded successfully.");
+    Ok((StatusCode::CREATED, file).into_response())
 }
 
-/// validates a path that follows a parent path and does not escape its domain.
-fn validate_file_path(bucket: &str, key: &str) -> Result<(), RustFSError> {
-    // 1. Join manually to ensure no root replacement
-    let full_path = Path::new(bucket).join(key.trim_start_matches('/'));
-
-    // 2. Clean the path (resolves ".." and ".") strictly in memory
-    let clean_path = full_path.clean();
-
-    // 3. Security Check: ensure it still starts with the bucket
-    if !clean_path.starts_with(bucket) || clean_path != full_path {
-        return Err(RustFSError::Upload(anyhow!(
-            "Path traversal detected, the object key provided is malformed or invalid: {}",
-            key
-        )));
-    }
-
-    Ok(())
-}
 /// extracts required and optional headers.
 fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
     info!("extracting headers");
@@ -179,23 +228,16 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
             "Invalid or missing Object-Type header"
         )))?;
 
-    let mut obj_key = headers
-        .get("Object-Key")
+    let obj_name = headers
+        .get("Object-Name")
         .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or(ApiError::BadRequest(anyhow!("Missing Object-Key header")))?;
-
-    // REMOVE leading slash if present (S3 keys should not start with /)
-    obj_key = obj_key.trim_start_matches('/').to_string();
+        .map(|s| s.trim().to_string())
+        .ok_or(ApiError::BadRequest(anyhow!("Missing Object-Name header")))?;
+    debug!(f_name = obj_name, "validating file/folder name.");
+    validate_display_name(&obj_name)?;
 
     let (cont_len, cont_type, checksum) = if obj_kind.is_folder() {
         debug!("the object is folder");
-        if !obj_key.ends_with('/') {
-            obj_key.push('/');
-        }
-        if !obj_key.starts_with('/') {
-            obj_key = format!("/{}", obj_key);
-        }
         (None, None, None)
     } else {
         debug!("the object is file");
@@ -211,7 +253,7 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
             .get(CONTENT_TYPE)
             .and_then(|h| h.to_str().ok())
             .and_then(|s| s.parse().ok())
-            .or_else(|| mime_guess::from_path(&obj_key).first())
+            .or_else(|| mime_guess::from_path(&obj_name).first())
             .unwrap_or(mime::APPLICATION_OCTET_STREAM)
             .to_string();
 
@@ -227,23 +269,22 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
 
     debug!("headers extracted successfully");
     Ok(UploadHeaders {
-        object_key: obj_key,
+        f_name: obj_name,
         object_kind: obj_kind,
         content_type: cont_type,
         content_length: cont_len,
         checksum,
     })
 }
-
-/// ===== Create multipart session, returns upload id =====
+/// ===== Create multipart session, returns upload id ===== file_id == object key in rustfs
 async fn create_multipart_upload(
     client: &Client,
     bucket: &str,
-    key: &str,
+    f_id: Uuid,
     obj_type: &str,
 ) -> Result<String, RustFSError> {
     debug!(
-        object_key = key,
+        file_id = %f_id,
         bucket = bucket,
         obj_type = obj_type,
         "creating multipart upload with obj_type: {}",
@@ -252,7 +293,7 @@ async fn create_multipart_upload(
     let response = client
         .create_multipart_upload()
         .bucket(bucket)
-        .key(key)
+        .key(f_id.to_string())
         .content_type(obj_type)
         .send()
         .await
@@ -280,13 +321,12 @@ pub async fn stream_file_rustfs_parallel(
     client: &Client,
     body: Body,
     bucket: &str,
-    key: &str,
+    key: Uuid, // file_id = object key in Rustfs
     upload_id: &str,
-) -> Result<(), RustFSError> {
+) -> Result<(Vec<CompletedPart>, StreamResult), RustFSError> {
     debug!("initalizing Parts communicating channels.");
     let (part_tx, part_rx) = mpsc::channel::<PartToUpload>(10);
     let (result_tx, result_rx) = mpsc::channel::<Result<CompletedPart, RustFSError>>(10);
-
     debug!("spawn parallel uploaders");
     // Spawn parallel uploaders
     let uploader_handle = spawn_uploaders(
@@ -308,11 +348,12 @@ pub async fn stream_file_rustfs_parallel(
 
     // Wait for tasks
     debug!("waiting streamer and uploader handles to finish.");
-    let _ = streamer_handle.await;
+    let stream_result = streamer_handle
+        .await
+        .map_err(|e| RustFSError::Upload(anyhow!("stream_body error: {}", e)))??;
     let _ = uploader_handle.await;
-    debug!("commiting and validating the uploaded file.");
-    // Complete upload
-    complete_upload(client, bucket, key, upload_id, completed_parts).await
+
+    Ok((completed_parts, stream_result))
 }
 
 /// # ===== Stream body and buffer into parts =====
@@ -321,18 +362,24 @@ pub async fn stream_file_rustfs_parallel(
 fn spawn_body_streamer(
     body: Body,
     part_tx: mpsc::Sender<PartToUpload>,
-) -> tokio::task::JoinHandle<Result<(), RustFSError>> {
+) -> tokio::task::JoinHandle<Result<StreamResult, RustFSError>> {
     tokio::spawn(async move {
         debug!("consuming body.");
         let mut stream = body.into_data_stream();
         let mut buffer = BytesMut::new();
+        let mut hasher = Sha256::new();
+        let mut total_size = 0;
         let mut part_number = 1;
 
         loop {
             // Fill buffer to PART_SIZE
             while buffer.len() < PART_SIZE {
                 match stream.next().await {
-                    Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
+                    Some(Ok(chunk)) => {
+                        hasher.update(&chunk);
+                        total_size += chunk.len();
+                        buffer.extend_from_slice(&chunk);
+                    }
                     Some(Err(e)) => {
                         return Err(RustFSError::Upload(anyhow!("Stream error: {}", e)));
                     }
@@ -360,8 +407,12 @@ fn spawn_body_streamer(
 
             part_number += 1;
         }
-
-        Ok(())
+        let checksum = STANDARD.encode(hasher.finalize());
+        let strs = StreamResult {
+            checksum,
+            file_size: total_size,
+        };
+        Ok(strs)
     })
 }
 
@@ -485,12 +536,12 @@ async fn complete_upload(
     key: &str,
     upload_id: &str,
     completed_parts: Vec<CompletedPart>,
-) -> Result<(), RustFSError> {
+) -> Result<CompleteMultipartUploadOutput, RustFSError> {
     let completed = CompletedMultipartUpload::builder()
         .set_parts(Some(completed_parts))
         .build();
 
-    client
+    let metadata_output = client
         .complete_multipart_upload()
         .bucket(bucket)
         .key(key)
@@ -498,9 +549,10 @@ async fn complete_upload(
         .multipart_upload(completed)
         .send()
         .await
-        .map_err(|e| RustFSError::Upload(anyhow!("Complete upload failed: {}", e)))?;
+        .map_err(|e| RustFSError::Upload(anyhow!("Complete upload failed: {}", e)))
+        .inspect_err(|e| error!("{}", e))?;
 
-    Ok(())
+    Ok(metadata_output)
 }
 
 /// ===== Abort multipart upload on error =====
@@ -508,17 +560,34 @@ async fn complete_upload(
 async fn abort_upload(
     client: &Client,
     bucket: &str,
-    key: &str,
+    f_id: Uuid,
     upload_id: &str,
 ) -> Result<(), RustFSError> {
     client
         .abort_multipart_upload()
         .bucket(bucket)
-        .key(key)
+        .key(f_id.to_string())
         .upload_id(upload_id)
         .send()
         .await
         .map_err(|e| RustFSError::Upload(anyhow!("Abort upload failed: {}", e)))?;
 
+    Ok(())
+}
+
+async fn abort_and_cleanup(
+    db: &PgPool,
+    client: &Client,
+    file: &mut FileRecord,
+    bucket: &str,
+    upload_id: &str,
+) -> Result<(), ApiError> {
+    file.status(ObjectStatus::Deleted);
+    upsert_file(db, file)
+        .await
+        .inspect_err(|e| error!("db update failed on abort: {}", e))?;
+    abort_upload(client, bucket, file.id, upload_id)
+        .await
+        .inspect_err(|e| error!("abort upload failed: {}", e))?;
     Ok(())
 }
