@@ -3,7 +3,7 @@
 use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
-use family_cloud::{AppState, UpdateMetadata};
+use family_cloud::{AppState, ObjectKind, UpdateMetadata};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -171,12 +171,22 @@ impl AppTest {
             .await
     }
     /// Post /api/objects
-    pub fn upload(&self, jwt: &str) -> TestRequest {
-        self.server.post("/api/objects").authorization_bearer(jwt)
-    }
-    pub async fn download_token(&self, jwt: &str, file_id: &str) -> TestResponse {
+    pub fn upload(&self, jwt: &str, parent_id: &str) -> TestRequest {
         self.server
-            .get(&format!("/api/objects/{}/download", file_id))
+            .post(&format!("/api/objects?parent_id={}", parent_id))
+            .authorization_bearer(jwt)
+    }
+    pub async fn download_token(
+        &self,
+        jwt: &str,
+        file_id: &str,
+        obj_kind: ObjectKind,
+    ) -> TestResponse {
+        self.server
+            .get(&format!(
+                "/api/objects/{}/download?kind={}",
+                file_id, obj_kind
+            ))
             .authorization_bearer(jwt)
             .await
     }
@@ -197,9 +207,9 @@ impl AppTest {
             .authorization_bearer(jwt)
             .await
     }
-    pub async fn get_metadata(&self, jwt: &str, id: Uuid) -> TestResponse {
+    pub async fn get_metadata(&self, jwt: &str, id: Uuid, obj_kind: &ObjectKind) -> TestResponse {
         self.server
-            .get(&format!("/api/objects/{}", id))
+            .get(&format!("/api/objects/{}?kind={}", id, obj_kind))
             .authorization_bearer(jwt)
             .await
     }

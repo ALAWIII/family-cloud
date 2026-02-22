@@ -1,5 +1,6 @@
 //! Database utilities for test setup and data management
 
+use family_cloud::{FolderRecord, User, insert_folder, insert_user_with_root_folder};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,8 +12,17 @@ pub struct TestDatabase;
 impl TestDatabase {
     /// Create and insert a verified test account into database
     pub async fn create_verified_account(pool: &PgPool) -> anyhow::Result<TestAccount> {
-        let account = TestAccount::default();
-        Self::insert_account(pool, &account).await?;
+        let mut account = TestAccount::default();
+        let folder = FolderRecord::new(account.id, None, "".into());
+        let mut user = User::new(
+            account.id,
+            account.username.to_string(),
+            account.email.to_string(),
+            account.password_hash.to_string(),
+        );
+        user.set_root_folder(folder.id);
+        account.root_folder = Some(folder.id);
+        insert_user_with_root_folder(&user, &folder, pool).await?;
         Ok(account)
     }
 
@@ -31,11 +41,12 @@ impl TestDatabase {
     /// Insert account into database
     pub async fn insert_account(pool: &PgPool, account: &TestAccount) -> anyhow::Result<()> {
         sqlx::query!(
-            "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO users (id,root_folder, username, email, password_hash) VALUES ($1, $2, $3, $4,$5)",
             account.id,
+            account.root_folder,
             account.username,
             account.email,
-            account.password_hash
+            account.password_hash,
         )
         .execute(pool)
         .await?;
