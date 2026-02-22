@@ -83,6 +83,7 @@ pub async fn upload(
     let uphead = extract_headers(&headers).inspect_err(|e| error!("{}", e))?;
     // checking whether the object already existed in RustFS and database.
     if uphead.object_kind.is_folder() {
+        info!("the object is folder: {}", uphead.f_name);
         if let Some(id) =
             is_folder_exists(&appstate.db_pool, claims.sub, upq.parent_id, &uphead.f_name)
                 .await
