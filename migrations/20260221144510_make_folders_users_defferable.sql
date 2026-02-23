@@ -1,0 +1,24 @@
+-- Add migration script here
+BEGIN;
+
+ALTER TABLE users
+DROP CONSTRAINT IF EXISTS users_root_folder_fkey;
+
+ALTER TABLE users
+ADD CONSTRAINT users_root_folder_fkey
+FOREIGN KEY (root_folder)
+REFERENCES folders(id)
+ON DELETE RESTRICT
+DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE folders
+DROP CONSTRAINT IF EXISTS folders_owner_id_fkey;
+
+ALTER TABLE folders
+ADD CONSTRAINT folders_owner_id_fkey
+FOREIGN KEY (owner_id)
+REFERENCES users(id)
+ON DELETE CASCADE
+DEFERRABLE INITIALLY DEFERRED;
+
+COMMIT;
