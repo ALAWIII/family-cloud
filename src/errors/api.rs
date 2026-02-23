@@ -45,6 +45,10 @@ pub enum ApiError {
     NotFound,
     #[error("object was already deleted.")]
     AlreadyDeleted,
+    #[error("file wanted to be uploaded was to big to fit user available capacity.")]
+    ObjectTooLarge,
+    #[error("file upload corrupted because mismatch in checksum!")]
+    ChecksumMismatch,
 }
 
 impl IntoResponse for ApiError {
@@ -55,8 +59,8 @@ impl IntoResponse for ApiError {
         let status = match self {
             // ---------- Database ----------
             ApiError::Database(db) => match db {
-                DatabaseError::NotFound => StatusCode::NOT_FOUND, // resource missing
-                DatabaseError::Duplicate => StatusCode::CONFLICT, // unique constraint
+                DatabaseError::NotFound(_) => StatusCode::NOT_FOUND, // resource missing
+                DatabaseError::Duplicate => StatusCode::CONFLICT,    // unique constraint
                 DatabaseError::PoolNotInitialized
                 | DatabaseError::PoolAlreadyInitialized
                 | DatabaseError::Connection(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
@@ -101,6 +105,8 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::CorruptedByte(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::AlreadyDeleted => StatusCode::NO_CONTENT,
+            ApiError::ObjectTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ApiError::ChecksumMismatch => StatusCode::UNPROCESSABLE_ENTITY,
         };
 
         status.into_response()

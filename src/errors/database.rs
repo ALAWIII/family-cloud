@@ -14,8 +14,8 @@ pub enum DatabaseError {
 
     // -------- Domain-level (safe to bubble up) --------
     /// Used internally; API should normalize response
-    #[error("Database entity,user or email not found")]
-    NotFound,
+    #[error("Database entity,user or email not found: {0}")]
+    NotFound(anyhow::Error),
 
     /// Unique constraint violation
     #[error("Database duplicate entry,account or email")]
