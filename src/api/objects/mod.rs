@@ -15,9 +15,9 @@ mod delete;
 mod metadata;
 pub use delete::*;
 pub use metadata::*;
-mod copy_obj;
+mod copy;
 mod move_obj;
-pub use copy_obj::*;
+pub use copy::*;
 pub use move_obj::*;
 
 //--------------------------------------objects manipulation ----------------------
@@ -32,7 +32,7 @@ pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
             get(get_metadata).patch(update_metadata),
         )
         .route("/api/objects/{id}/move", post(move_object))
-        .route("/api/objects/{id}/copy", post(copy_object))
+        .route("/api/objects/{id}/copy", post(copy))
         .route("/api/objects/{id}/download", get(download))
         .layer(from_fn_with_state(hmac, validate_jwt_access_token))
         .route("/api/objects/stream", get(stream)) // no need for accepting jwt access token.
