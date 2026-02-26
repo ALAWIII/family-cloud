@@ -234,7 +234,18 @@ pub enum ObjectStatus {
     Uploading,
     Copying,
 }
-
+impl Display for ObjectStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v = match self {
+            Self::Active => "active",
+            Self::Deleting => "deleting",
+            Self::Deleted => "deleted",
+            Self::Copying => "copying",
+            Self::Uploading => "uploading",
+        };
+        write!(f, "{}", v)
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum FileSystemObject {
@@ -326,7 +337,7 @@ pub struct DownloadTokenData {
     pub object_d: FileSystemObject,
     pub ip_address: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
 #[sqlx(type_name = "object_kind_type", rename_all = "PascalCase")]
 #[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
@@ -491,6 +502,8 @@ impl IntoResponse for FileRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, FromRow)]
 pub struct FolderRecord {
     pub id: Uuid,
+    pub copying_children_count: i32,
+    pub deleting_children_count: i32,
     pub owner_id: Uuid,
     pub parent_id: Option<Uuid>, // folder
     pub name: String,
