@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use axum::{
     Extension, Json, debug_handler,
     extract::{Query, State},
@@ -33,7 +34,9 @@ pub async fn change_email(
     info!("fetching the old email.");
     let old_email = fetch_email_by_id(&appstate.db_pool, claims.sub) // user_id
         .await?
-        .ok_or(DatabaseError::NotFound)?;
+        .ok_or(DatabaseError::NotFound(anyhow!(
+            "failed to fetch email by id"
+        )))?;
 
     //-------------------------
     let secret = appstate.settings.secrets.hmac;
@@ -136,7 +139,7 @@ pub async fn verify_change_email(
             "number of affected records by this update is: {}",
             affected_rows
         );
-        return Err(DatabaseError::NotFound.into()); // User doesn't exist
+        return Err(DatabaseError::NotFound(anyhow!("no rows were affected.")).into()); // User doesn't exist
     }
     info!("deleting and cleaning change email verification token from redis.");
     delete_token_from_redis(&mut redis_con, &key).await?;
