@@ -5,16 +5,16 @@ app:
   log_level: info
   log_directory: ./familycloud_logs
 database:
-  name: familycloud
+  db_name: familycloud
   host: localhost
   port: 5432
   user_name: allawiii
-  password: 0788
+  password: "0788"
 email:
   protocol: "smtp" # if smtps = no need for tls_required , if smtp and not mailhog tls_required = true
   tls_param: false
   port: 1025
-  server: localhost
+  host: localhost
   username: anything
   password: anything
   from_sender: noreply@yourapp.com
