@@ -49,6 +49,8 @@ pub enum ApiError {
     ObjectTooLarge,
     #[error("file upload corrupted because mismatch in checksum!")]
     ChecksumMismatch,
+    #[error("unexpected job error : {0}")]
+    Job(#[from] JobError),
 }
 
 impl IntoResponse for ApiError {
@@ -107,6 +109,7 @@ impl IntoResponse for ApiError {
             ApiError::AlreadyDeleted => StatusCode::NO_CONTENT,
             ApiError::ObjectTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::ChecksumMismatch => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::Job(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         status.into_response()
