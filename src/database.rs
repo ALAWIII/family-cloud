@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use crate::{
-    DatabaseConfig, DatabaseError, FileDownload, FileRecord, FolderRecord, UpdateMetadata, User,
-    UserStorageInfo,
+    CopyJobRecord, DatabaseConfig, DatabaseError, DeleteJobRecord, FileDownload, FileRecord,
+    FolderRecord, ObjectStatus, UpdateMetadata, User, UserStorageInfo,
 };
 use anyhow::anyhow;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
@@ -22,7 +22,7 @@ static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 pub async fn init_db(db: &DatabaseConfig) -> Result<(), DatabaseError> {
     debug!("configuring and initializing the database.");
     let pool = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(200)
         .connect(&db.url())
         .await
         .inspect_err(|e| error!("failed to establish connection to database: {}", e))?;
@@ -370,42 +370,6 @@ pub async fn get_user_available_storage(
 
 // fetch folder/ file metadata
 
-pub async fn delete_folders(
-    con: &PgPool,
-    owner_id: Uuid,
-    folders: &[Uuid],
-) -> Result<Vec<Uuid>, DatabaseError> {
-    let mut tx = con.begin().await?;
-
-    let query = include_str!("../db_queries/delete_folders.sql");
-
-    let files_id: Vec<Uuid> = sqlx::query_scalar(query)
-        .bind(folders)
-        .bind(owner_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-    tx.commit().await?;
-    Ok(files_id)
-}
-pub async fn delete_files(
-    con: &PgPool,
-    owner_id: Uuid,
-    files: &[Uuid],
-) -> Result<Vec<Uuid>, DatabaseError> {
-    let mut tx = con.begin().await?;
-
-    let query = include_str!("../db_queries/delete_files.sql");
-
-    let files_id: Vec<Uuid> = sqlx::query_scalar(query)
-        .bind(files)
-        .bind(owner_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-    tx.commit().await?;
-    Ok(files_id)
-}
 pub async fn fetch_all_user_object_ids(
     con: &PgPool,
     owner_id: Uuid,
@@ -459,4 +423,180 @@ pub async fn fetch_all_file_ids_paths(
         .await?;
 
     Ok(files)
+}
+pub async fn mark_file_as(
+    con: &PgPool,
+    f_ids: &[Uuid],
+    status: ObjectStatus,
+) -> Result<u64, DatabaseError> {
+    let r = sqlx::query!(
+        "UPDATE files
+        SET status=$1
+        WHERE id=ANY($2)",
+        status as _,
+        f_ids
+    )
+    .execute(con)
+    .await
+    .inspect_err(|e| error!("failed to mark file as {} : {}", status, e))?;
+    Ok(r.rows_affected())
+}
+pub async fn decrement_delete_count_folder(
+    pool: &PgPool,
+    folder_id: Uuid,
+) -> Result<(), DatabaseError> {
+    sqlx::query!(
+        "UPDATE folders SET deleting_children_count = deleting_children_count - 1 WHERE id = $1",
+        folder_id
+    )
+    .execute(pool)
+    .await
+    .inspect_err(|e| error!("failed to commit delete folders transaction: {}", e))?;
+
+    Ok(())
+}
+
+pub async fn finalize_copy(
+    pool: &PgPool,
+    file_id: Uuid,
+    folder_id: Uuid,
+) -> Result<(), DatabaseError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .inspect_err(|e| error!("failed to start finalize copy transaction: {}", e))?;
+
+    sqlx::query!(
+        "UPDATE files SET status = 'active' WHERE id = $1 AND status = 'copying'",
+        file_id
+    )
+    .execute(&mut *tx)
+    .await
+    .inspect_err(|e| error!("failed to mark file as active: {}", e))?;
+
+    sqlx::query!(
+        "UPDATE folders SET copying_children_count = copying_children_count - 1 WHERE id = $1",
+        folder_id
+    )
+    .execute(&mut *tx)
+    .await
+    .inspect_err(|e| error!("failed to decrement folder copying_children_count: {}", e))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!("failed to commit finalize copy transaction: {}", e))?;
+    Ok(())
+}
+/// accepts a list of folders and the tries to mark the folders and their files as deleted recursively and returns all files ids that are decendant of the deleted folders.
+///
+/// marks every parent_id folder of every file by 1.
+pub async fn delete_folders(
+    con: &PgPool,
+    owner_id: Uuid,
+    folders: &[Uuid],
+) -> Result<Option<Vec<DeleteJobRecord>>, DatabaseError> {
+    if folders.is_empty() {
+        return Ok(Some(vec![]));
+    }
+    let mut tx = con
+        .begin()
+        .await
+        .inspect_err(|e| error!("failed to start delete folders transaction: {}", e))?;
+
+    let query = include_str!("../db_queries/delete_folders.sql");
+
+    let files_id: Vec<DeleteJobRecord> = sqlx::query_as::<_, DeleteJobRecord>(query)
+        .bind(folders)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await
+        .inspect_err(|e| error!("failed to execute delete folders query: {}", e))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!("failed to commit delete folders transaction: {}", e))?;
+    if files_id.first().is_some_and(|v| v.id.is_none()) {
+        return Ok(None);
+    }
+    Ok(Some(files_id))
+}
+/// accepts a list of files ids and then marks all of them as deleted , it also increments the parent_id of every file by 1.
+pub async fn delete_files(
+    con: &PgPool,
+    owner_id: Uuid,
+    files: &[Uuid],
+) -> Result<Vec<DeleteJobRecord>, DatabaseError> {
+    if files.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut tx = con
+        .begin()
+        .await
+        .inspect_err(|e| error!("failed to start delete files transaction: {}", e))?;
+
+    let query = include_str!("../db_queries/delete_files.sql");
+
+    let files_id: Vec<DeleteJobRecord> = sqlx::query_as::<_, DeleteJobRecord>(query)
+        .bind(files)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await
+        .inspect_err(|e| error!("failed to execute delete files query: {}", e))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!("failed to commit delete files transaction: {}", e))?;
+    Ok(files_id)
+}
+
+pub async fn copy_folders(
+    con: &PgPool,
+    folders_ids: &[Uuid],
+    dest_folder_id: Uuid, // the new parent id to be attached to the
+    owner_id: Uuid,
+) -> Result<Vec<CopyJobRecord>, DatabaseError> {
+    let mut tx = con
+        .begin()
+        .await
+        .inspect_err(|e| error!("failed to start copy folders transaction: {}", e))?;
+    let query = include_str!("../db_queries/copy_folders.sql");
+
+    let files_id: Vec<CopyJobRecord> = sqlx::query_as::<_, CopyJobRecord>(query)
+        .bind(folders_ids)
+        .bind(dest_folder_id)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await
+        .inspect_err(|e| error!("failed to execute copy folders query: {}", e))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!("failed to commit copy folders transaction: {}", e))?;
+    Ok(files_id)
+}
+
+pub async fn copy_files(
+    con: &PgPool,
+    files_ids: &[Uuid],
+    dest_folder_id: Uuid, // the new parent id to be attached to the
+    owner_id: Uuid,
+) -> Result<Vec<CopyJobRecord>, DatabaseError> {
+    let mut tx = con
+        .begin()
+        .await
+        .inspect_err(|e| error!("failed to start copy files transaction: {}", e))?;
+    let query = include_str!("../db_queries/copy_files.sql");
+
+    let files_id: Vec<CopyJobRecord> = sqlx::query_as::<_, CopyJobRecord>(query)
+        .bind(files_ids)
+        .bind(dest_folder_id)
+        .bind(owner_id)
+        .fetch_all(&mut *tx)
+        .await
+        .inspect_err(|e| error!("failed to execute copy files query: {}", e))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!("failed to commit copy files transaction: {}", e))?;
+    Ok(files_id)
 }
