@@ -15,7 +15,7 @@ async fn fetch_all_user_object_ids() -> anyhow::Result<()> {
             upload_file(
                 &app,
                 &format!("{}.txt", i),
-                &account.root_folder(),
+                account.root_folder().unwrap(),
                 vec![0u8; 10],
                 &login_data.access_token,
             )
@@ -44,7 +44,7 @@ async fn fetch_file_metadata() -> anyhow::Result<()> {
     let mut file = upload_file(
         &app,
         "potato.txt",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         vec![0u8; 10],
         &login_data.access_token,
     )
@@ -68,7 +68,7 @@ async fn fetch_folder_metadata() -> anyhow::Result<()> {
     let mut folder = upload_folder(
         &app,
         "potato.txt",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         &login_data.access_token,
     )
     .await;
@@ -105,7 +105,7 @@ async fn update_metadata() -> anyhow::Result<()> {
     let up_obj = upload_file(
         &app,
         "potato.txt",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         vec![0u8; 10],
         &login_data.access_token,
     )

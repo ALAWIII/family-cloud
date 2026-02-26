@@ -17,7 +17,7 @@ async fn download_file() -> anyhow::Result<()> {
     let file = upload_file(
         &app,
         "potato.pdf",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         vec![0u8; 1024 * 1024 * 10],
         &login_data.access_token,
     )
@@ -43,24 +43,19 @@ async fn download_entire_folder() -> anyhow::Result<()> {
     let folder0: FolderRecord = upload_folder(
         &app,
         "box",
-        &account.root_folder(),
+        account.root_folder.unwrap(),
         &login_data.access_token,
     )
     .await;
-    let folder: FolderRecord = upload_folder(
-        &app,
-        "sandwitches",
-        &folder0.id.to_string(),
-        &login_data.access_token,
-    )
-    .await;
+    let folder: FolderRecord =
+        upload_folder(&app, "sandwitches", folder0.id, &login_data.access_token).await;
     let mut files_info = vec![];
     for i in (0..10) {
         files_info.push(
             upload_file(
                 &app,
                 &format!("{}.txt", i),
-                &folder.id.to_string(),
+                folder.id,
                 vec![0u8; 1024 * 1024],
                 &login_data.access_token,
             )
@@ -108,7 +103,7 @@ async fn download_part_using_range_header() -> anyhow::Result<()> {
     let file = upload_file(
         &app,
         "potato.txt",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         vec![0u8; 1024],
         &login_data.access_token,
     )
@@ -137,7 +132,7 @@ async fn concurrent_download_exceeded() -> anyhow::Result<()> {
     let file = upload_file(
         &app,
         "chocolate.txt",
-        &account.root_folder(),
+        account.root_folder().unwrap(),
         vec![0u8; 1024 * 1024 * 5],
         &login_data.access_token,
     )
