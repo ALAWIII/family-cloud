@@ -1,14 +1,17 @@
 mod auth;
 mod utils;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 mod metadata;
+use aws_sdk_s3::Client;
 use axum::{body::Bytes, extract::connect_info::MockConnectInfo};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use family_cloud::{
-    FileRecord, FolderRecord, LoginResponse, TokenOptions, create_user_bucket, get_rustfs,
-    init_tracing,
+    FileRecord, FolderRecord, LoginResponse, TokenOptions, WorkersName, create_user_bucket,
+    get_rustfs, init_apalis, init_tracing, insert_folder, upsert_file,
 };
+use sqlx::PgPool;
 pub use utils::*;
+mod delete;
 mod download;
 mod upload;
 use axum::http::header::CONTENT_LENGTH;
@@ -16,6 +19,7 @@ use axum::http::header::CONTENT_LENGTH;
 // Shared Test Setup - Initialize All Infrastructure
 // ============================================================================
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 pub fn calculate_checksum(f: &[u8]) -> String {
     // 2. Calculate SHA-256 checksum
     let mut hasher = Sha256::new();
@@ -26,7 +30,7 @@ pub fn calculate_checksum(f: &[u8]) -> String {
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
-    init_tracing("familycloud", "family_cloud=debug,warn", "./family_cloud")?;
+    init_tracing("familycloud", "family_cloud=error,warn", "./family_cloud")?;
     let mut mailhog_server = None;
     if mhog_cont {
         mailhog_server = Some(init_test_containers().await?);
@@ -112,7 +116,7 @@ pub async fn setup_with_authenticated_user() -> anyhow::Result<(AppTest, TestAcc
 async fn upload_file(
     app: &AppTest,
     f_name: &str,
-    parent_id: &str,
+    parent_id: Uuid,
     data: Vec<u8>,
     jwt: &str,
 ) -> FileRecord {
@@ -129,7 +133,7 @@ async fn upload_file(
     resp.assert_status_success();
     resp.json()
 }
-async fn upload_folder(app: &AppTest, f_name: &str, parent_id: &str, jwt: &str) -> FolderRecord {
+async fn upload_folder(app: &AppTest, f_name: &str, parent_id: Uuid, jwt: &str) -> FolderRecord {
     let resp = app
         .upload(jwt, parent_id)
         .add_header("Object-Type", "folder")
@@ -138,4 +142,77 @@ async fn upload_folder(app: &AppTest, f_name: &str, parent_id: &str, jwt: &str) 
     resp.assert_status_success();
 
     resp.json()
+}
+
+pub async fn init_workers(con: &PgPool, rfs: Client) -> anyhow::Result<WorkersName> {
+    let n_worker = WorkersName {
+        delete: Uuid::new_v4().to_string(),
+        copy: Uuid::new_v4().to_string(),
+    };
+    init_apalis(con, rfs, n_worker.clone()).await?;
+    Ok(n_worker)
+}
+#[derive(Debug, Clone)]
+pub struct Tree {
+    pub folders: Vec<FolderRecord>,
+    pub files: Vec<FileRecord>,
+    pub workers: WorkersName,
+}
+
+async fn wait_job_until_finishes(con: &PgPool, workers: &WorkersName) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(600), async {
+        loop {
+            let value = sqlx::query!(
+                r#"SELECT (
+                    -- Phase 1: jobs must exist first
+                    (
+                    SELECT COUNT(*)
+                        FROM apalis.jobs j
+                        WHERE j.job_type IN ($1,$2)) > 0
+                    AND
+                    -- Phase 2: all of them must be done
+                    (
+                    SELECT COUNT(*)
+                        FROM apalis.jobs j
+                     WHERE j.job_type IN ($1,$2) AND j.done_at IS NULL) = 0
+                ) AS "done!: bool""#,
+                workers.delete,
+                workers.copy,
+            )
+            .fetch_one(con)
+            .await?;
+            if value.done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Ok::<_, sqlx::Error>(())
+    })
+    .await
+    .expect("worker did not finish in time")?;
+    Ok(())
+}
+async fn create_folders_files_tree(app: &AppTest, account: &TestAccount) -> anyhow::Result<Tree> {
+    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+    let fo1 = FolderRecord::new(account.id, account.root_folder, "fo1".to_string());
+    let fo2 = FolderRecord::new(account.id, Some(fo1.id), "fo2".to_string());
+    let fo2_1 = FolderRecord::new(account.id, Some(fo2.id), "fo2_1".to_string());
+    let fo2_2 = FolderRecord::new(account.id, Some(fo2.id), "fo2_2".to_string());
+    let fi1 = FileRecord::new(account.id, fo2_2.id, "fi1_2".to_string());
+    let fi2 = FileRecord::new(account.id, fo2_2.id, "fi2_2".to_string());
+    let fi3 = FileRecord::new(account.id, fo1.id, "fi1_1".to_string());
+    let folders = vec![fo1, fo2, fo2_1, fo2_2];
+    let files = vec![fi1, fi2, fi3];
+    for fo in &folders {
+        insert_folder(&app.state.db_pool, fo).await?;
+    }
+    for fi in &files {
+        upsert_file(&app.state.db_pool, fi).await?;
+    }
+
+    Ok(Tree {
+        folders,
+        files,
+        workers,
+    })
 }
