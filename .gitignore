@@ -1,5 +1,6 @@
 /target
 .env
 out.txt
+familycloud_logs
 family_cloud
 scenarios

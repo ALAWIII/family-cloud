@@ -101,6 +101,12 @@ aws-smithy-types-convert = { version = "0.60.12", features = [
 ] }
 path-clean = "1.0.1"
 derivative = "2.2.0"
+apalis = { version = "1.0.0-rc.4", features = ["timeout", "retry", "limit"] }
+apalis-postgres = "1.0.0-rc.3"
+apalis-core = "1.0.0-rc.4"
+num_cpus = "1.17.0"
+apalis-codec = "0.1.0-rc.4"
+regex = "1.12.2"
 
 [dev-dependencies]
 tower = "0.5.2"
