@@ -1,14 +1,14 @@
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region},
+    operation::head_object::HeadObjectOutput,
 };
-use aws_smithy_types_convert::date_time::DateTimeExt;
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::OnceLock;
 use tracing::{error, instrument};
 use uuid::Uuid;
 
-use crate::{ObjectRecord, RustFSError, RustfsConfig};
+use crate::{FileRecord, RustFSError, RustfsConfig};
 
 static RUST_FS_CONN: OnceLock<Client> = OnceLock::new();
 
@@ -53,19 +53,14 @@ pub async fn create_user_bucket(rfs_con: &Client, user_id: &str) -> Result<(), R
 
 pub async fn fetch_object_metadata(
     rfs_con: &Client,
-    obj: &mut ObjectRecord,
-) -> Result<(), RustFSError> {
-    let head = rfs_con
+    file: &FileRecord,
+) -> Result<HeadObjectOutput, RustFSError> {
+    rfs_con
         .head_object()
-        .bucket(obj.user_id.to_string()) // user_id = bucket
-        .key(&obj.object_key)
+        .bucket(file.bucket_name()) // user_id = bucket
+        .key(file.key())
         .checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled)
         .send()
         .await
-        .map_err(|e| RustFSError::Metadata(e.into()))?;
-
-    obj.etag = head.e_tag;
-    obj.last_modified = head.last_modified.and_then(|lm| lm.to_chrono_utc().ok());
-    obj.size = head.content_length;
-    Ok(())
+        .map_err(|e| RustFSError::Metadata(e.into()))
 }

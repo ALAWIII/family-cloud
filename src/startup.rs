@@ -16,8 +16,7 @@ pub struct AppState {
     pub mail_client: Option<AsyncSmtpTransport<Tokio1Executor>>,
 }
 
-pub fn setup_app() -> Result<AppState, ApiError> {
-    let settings = AppSettings::load()?;
+pub fn setup_app(settings: AppSettings) -> Result<AppState, ApiError> {
     Ok(AppState {
         settings,
         db_pool: get_db()?,
@@ -54,22 +53,27 @@ async fn start_app_server(state: AppState) -> anyhow::Result<()> {
 }
 
 pub async fn run() -> anyhow::Result<()> {
-    let state = setup_app()?;
+    let settings = AppSettings::load()?;
+    let w_names = WorkersName {
+        delete: "delete".into(),
+        copy: "copy".into(),
+    };
     init_tracing(
-        &state.settings.app.name,
-        &state.settings.app.tracing_settings(),
-        &state.settings.app.log_directory,
+        &settings.app.name,
+        &settings.app.tracing_settings(),
+        &settings.app.log_directory,
     )?;
     init_mail_client(
-        state
-            .settings
+        settings
             .email
             .as_ref()
             .ok_or(EmailError::ClientNotInitialized)?,
     )?;
-    init_redis_pool(&state.settings.redis).await?;
-    init_rustfs(&state.settings.rustfs, &state.settings.secrets.rustfs).await?;
-    init_db(&state.settings.database).await?;
+    init_redis_pool(&settings.redis).await?;
+    init_rustfs(&settings.rustfs, &settings.secrets.rustfs).await?;
+    init_db(&settings.database).await?;
+    let state = setup_app(settings)?;
+    init_apalis(&state.db_pool, state.rustfs_con.clone(), w_names).await?;
     start_app_server(state).await?;
     Ok(())
 }
