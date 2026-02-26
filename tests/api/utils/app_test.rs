@@ -3,7 +3,7 @@
 use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
-use family_cloud::{AppState, ObjectKind, UpdateMetadata};
+use family_cloud::{AppState, DeleteRequest, ObjectKind, UpdateMetadata};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -171,7 +171,7 @@ impl AppTest {
             .await
     }
     /// Post /api/objects
-    pub fn upload(&self, jwt: &str, parent_id: &str) -> TestRequest {
+    pub fn upload(&self, jwt: &str, parent_id: Uuid) -> TestRequest {
         self.server
             .post(&format!("/api/objects?parent_id={}", parent_id))
             .authorization_bearer(jwt)
@@ -223,6 +223,13 @@ impl AppTest {
             .patch(&format!("/api/objects/{}", id))
             .authorization_bearer(jwt)
             .json(cmetadata)
+            .await
+    }
+    pub async fn delete(&self, jwt: &str, body: &[DeleteRequest]) -> TestResponse {
+        self.server
+            .delete("/api/objects")
+            .authorization_bearer(jwt)
+            .json(body)
             .await
     }
 }

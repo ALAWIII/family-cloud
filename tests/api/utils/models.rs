@@ -42,8 +42,8 @@ impl TestAccount {
         self.email = email.into();
         self
     }
-    pub fn root_folder(&self) -> String {
-        self.root_folder.map(|v| v.to_string()).unwrap_or("".into())
+    pub fn root_folder(&self) -> Option<Uuid> {
+        self.root_folder
     }
 
     /// Fluent API: Set password and rehash
