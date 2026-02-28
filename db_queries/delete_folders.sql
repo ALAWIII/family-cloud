@@ -46,32 +46,27 @@ updated_files AS (
       AND owner_id = $2
       AND status = 'active'
       AND (SELECT NOT blocked FROM guard)
-    RETURNING id, parent_id
+    RETURNING id, parent_id,size
 ),
--- Marks all folders in the tree as deleted AND increments deleting_children_count
--- by the number of files each folder owns. This unifies the folder-delete flow
--- with the individual-file-delete flow — the background job always decrements
--- deleting_children_count when it finishes a file, and when it hits 0 the folder
--- is considered fully cleaned up, regardless of how the delete was initiated.
--- LEFT JOIN ensures folders with no files (like fo2) still get marked deleted
--- with a safe +0 increment. Single UPDATE avoids the double-write conflict that
--- would occur if this were two separate CTEs touching the same rows.
+total_size AS (
+    SELECT COALESCE(sum(size),0) as ts FROM updated_files us
+    ),
+decrement_size AS (
+    UPDATE users SET storage_used_bytes=GREATEST(storage_used_bytes-(SELECT ts FROM total_size ),0) WHERE id=$2
+
+    ),
+-- Marks all folders in the tree as deleted.
+-- Soft-delete only — no counters to update since deletion is a single
+-- atomic status flip. Files under these folders are already handled by
+-- updated_files. Guard ensures this is skipped entirely if any folder
+-- has an in-progress copy job (copying_children_count > 0).
+
 updated_folders AS (
     UPDATE folders
     SET
         status = 'deleted',
-        deleted_at = NOW(),
-        deleting_children_count = deleting_children_count + COALESCE(counts.cnt, 0)
-    FROM (
-        SELECT lf.id, COALESCE(fc.cnt, 0) AS cnt
-        FROM locked_folders lf
-        LEFT JOIN (
-            SELECT parent_id, COUNT(*) AS cnt
-            FROM updated_files
-            GROUP BY parent_id
-        ) fc ON lf.id = fc.parent_id
-    ) AS counts
-    WHERE folders.id = counts.id
+        deleted_at = NOW()
+    WHERE id IN (SELECT id FROM locked_folders)
       AND (SELECT NOT blocked FROM guard)
 )
 -- Final result interprets three distinct outcomes for the caller:

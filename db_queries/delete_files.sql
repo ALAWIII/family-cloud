@@ -6,14 +6,13 @@ WITH updated_files AS (
     WHERE id = ANY($1)
       AND owner_id = $2
       AND status = 'active'
-    RETURNING id, parent_id
+    RETURNING id, parent_id,size
 ),
-increment_counters AS (
-    UPDATE folders
-    SET deleting_children_count = deleting_children_count + counts.cnt
-    FROM (
-        SELECT parent_id, COUNT(*) AS cnt FROM updated_files GROUP BY parent_id
-    ) counts
-    WHERE folders.id = counts.parent_id
+
+total_size AS (
+    SELECT COALESCE(sum(uf.size),0) as ts FROM updated_files uf
+    ),
+decrement_size AS (
+    UPDATE users SET storage_used_bytes= GREATEST(storage_used_bytes-(SELECT ts FROM total_size),0) WHERE id=$2
 )
 SELECT id, parent_id FROM updated_files;
