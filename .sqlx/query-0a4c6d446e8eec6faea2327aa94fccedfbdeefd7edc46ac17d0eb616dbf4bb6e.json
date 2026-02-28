@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE folders\n        SET copying_children_count = GREATEST(copying_children_count - 1, 0)\n        WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a4c6d446e8eec6faea2327aa94fccedfbdeefd7edc46ac17d0eb616dbf4bb6e"
+}
