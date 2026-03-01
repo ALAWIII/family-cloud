@@ -1,9 +1,15 @@
-WITH file_mapping AS (
+WITH
+destination_ownership AS (
+    SELECT EXISTS (SELECT 1 FROM folders WHERE id=$2 AND owner_id=$3 AND status='active' ) as cdo
+
+    ),
+
+file_mapping AS (
     SELECT f.id AS source_id, gen_random_uuid() AS dest_id,
            f.name, f.size, f.mime_type, f.etag, f.checksum, f.last_modified, f.metadata,
            f.parent_id AS source_parent_id
     FROM files f
-    WHERE f.id = ANY($1) AND owner_id=$3 AND f.status = 'active'
+    WHERE f.id = ANY($1) AND owner_id=$3 AND f.status = 'active' AND (SELECT cdo FROM destination_ownership)
 ),
 
 total_size AS (
@@ -27,7 +33,7 @@ updated_counts AS (
     SET copying_children_count = copying_children_count + (SELECT COUNT(*) FROM inserted)
     WHERE id = $2 AND (SELECT has_space FROM check_space)
 )
-SELECT fmap.source_id AS source_file_id, ins.id AS new_file_id, ins.parent_id AS new_parent_folder_id
+SELECT fmap.source_id AS source_file_id, ins.id AS new_file_id, ins.parent_id AS new_parent_folder_id, ins.size as size
 FROM inserted ins
 JOIN file_mapping fmap ON fmap.dest_id = ins.id
 WHERE (SELECT has_space FROM check_space);

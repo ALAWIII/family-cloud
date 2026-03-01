@@ -5,6 +5,10 @@
 
 WITH RECURSIVE
 
+destination_ownership AS (
+    SELECT EXISTS (SELECT 1 FROM folders WHERE id=$2 AND owner_id=$3 AND status='active' ) as cdo
+
+    ),
 -- Recursively collect the full subtree of folders to copy.
 -- Starts from the root folders passed in $1, then walks down
 -- through all their descendants (children, grandchildren, etc.)
@@ -12,7 +16,7 @@ WITH RECURSIVE
 source_tree AS (
     -- Anchor: the root folders explicitly requested by the app
     SELECT id, parent_id, name FROM folders
-    WHERE id = ANY($1) AND status = 'active' AND owner_id=$3
+    WHERE id = ANY($1) AND status = 'active' AND owner_id=$3 AND (SELECT cdo FROM destination_ownership)
 
     UNION ALL
 
@@ -80,6 +84,7 @@ inserted_folders AS (
     -- so pfm.dest_id will be NULL for roots → COALESCE falls back to $2.
     LEFT JOIN folder_mapping pfm ON pfm.source_id = st.parent_id
     WHERE (SELECT has_space FROM check_space)
+      AND (SELECT cdo FROM destination_ownership)
     RETURNING id
 ),
 
@@ -100,7 +105,7 @@ inserted_files AS (
         $3,              -- owner
         name, size, mime_type, etag, checksum, last_modified, metadata,
         'copying'        -- mark as in-progress until storage copy is done
-    FROM file_mapping WHERE (SELECT has_space FROM check_space)
+    FROM file_mapping WHERE (SELECT has_space FROM check_space) AND (SELECT cdo FROM destination_ownership)
     RETURNING id, parent_id  -- return to use in count update and final SELECT
 ),
 
@@ -123,8 +128,8 @@ updated_counts AS (
 SELECT
     fmap.source_id AS source_file_id,        -- original file ID
     ins.id AS new_file_id,                   -- new copied file ID
-    ins.parent_id AS new_parent_folder_id   -- new folder it was placed in
-
+    ins.parent_id AS new_parent_folder_id,   -- new folder it was placed in
+    ins.size as size
 FROM inserted_files ins
 -- Re-join file_mapping to get the source_id (RETURNING doesn't include it)
 JOIN file_mapping fmap ON fmap.dest_id = ins.id
