@@ -1,5 +1,6 @@
+use anyhow::anyhow;
 use axum::{Extension, Json, debug_handler, extract::State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -16,8 +17,14 @@ pub async fn copy(
     State(appstate): State<AppState>,
     Extension(claims): Extension<Claims>,
     Json(copy_list): Json<CopyRequest>,
-) -> Result<(), ApiError> {
+) -> Result<Json<usize>, ApiError> {
     info!("start new copy transaction.");
+    if copy_list.f_list.is_empty() {
+        return Err(ApiError::BadRequest(anyhow!(
+            "list is empty, no items to copy!"
+        )));
+    }
+
     let files = copy_list
         .f_list
         .iter()
@@ -51,7 +58,7 @@ pub async fn copy(
         ),
     );
 
-    let list = match (folder_results, file_results) {
+    let list: Vec<CopyJob> = match (folder_results, file_results) {
         (Err(e1), Err(_)) => return Err(e1.into()),
         (Ok(f), Err(_)) | (Err(_), Ok(f)) => f,
         (Ok(mut f1), Ok(f2)) => {
@@ -65,20 +72,22 @@ pub async fn copy(
         bucket: claims.sub,
     })
     .collect();
+
+    let length = list.len();
     info!("sending list of copy jobs to appropriate worker.");
     send_copy_jobs_to_worker(list)
         .await
         .inspect_err(|e| error!("{e}"))?;
     info!("copying files success.");
-    Ok(())
+    Ok(Json(length))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CopyRequest {
     pub dest_folder_id: Uuid,
     pub f_list: Vec<CopyItemRequest>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CopyItemRequest {
     pub f_id: Uuid,
     pub kind: ObjectKind,
