@@ -8,23 +8,41 @@ use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, ObjectKind, ObjectKindQuery, fetch_all_user_object_ids,
-    fetch_file_info, fetch_folder_info, update_file_metadata,
+    ApiError, AppState, Claims, FolderChild, ObjectKind, ObjectKindQuery,
+    fetch_all_user_object_ids, fetch_file_info, fetch_folder_children, fetch_folder_info,
+    update_file_metadata,
 };
+
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
 ))]
 pub async fn list_objects(
     Extension(claims): Extension<Claims>,
     State(appstate): State<AppState>,
-) -> Result<Json<Vec<Uuid>>, ApiError> {
+) -> Result<Json<Vec<FolderChild>>, ApiError> {
     info!("sending all objects id's for user: {}", claims.sub);
     Ok(fetch_all_user_object_ids(&appstate.db_pool, claims.sub)
         .await
         .map(Json)
         .inspect_err(|e| error!("{}", e))?)
 }
-
+#[instrument(skip_all,err(Display),fields(
+    user_id=%claims.sub,
+    folder_id=%folder_id,
+))]
+#[debug_handler]
+pub async fn list_children(
+    State(appstate): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(folder_id): Path<Uuid>,
+) -> Result<Json<Vec<FolderChild>>, ApiError> {
+    info!("fetching children of folder from database.");
+    Ok(
+        fetch_folder_children(&appstate.db_pool, folder_id, claims.sub)
+            .await
+            .map(Json)?,
+    )
+}
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
     file_id=%f_id,
