@@ -1,5 +1,5 @@
 -- Add migration script here
-CREATE TABLE objects (
+CREATE TABLE IF NOT EXISTS objects (
     id UUID PRIMARY KEY,                -- internal unique file_id
     user_id UUID NOT NULL,              -- bucket / owner
     object_key TEXT NOT NULL,           -- RustFS key, e.g. "/shawarma/potato.txt"
