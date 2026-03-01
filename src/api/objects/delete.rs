@@ -16,7 +16,7 @@ pub async fn delete(
     Extension(claims): Extension<Claims>,
     State(appstate): State<AppState>,
     Json(f_list): Json<Vec<DeleteRequest>>,
-) -> Result<(), ApiError> {
+) -> Result<Json<usize>, ApiError> {
     info!("start deleting process with {} items", f_list.len());
     if f_list.is_empty() {
         return Err(ApiError::BadRequest(anyhow!(
@@ -71,16 +71,16 @@ pub async fn delete(
                 .collect()
         }
     };
-
+    let length = files_list.len();
     info!(
-        number_jobs = files_list.len(),
+        number_jobs = length,
         "start streaming all jobs to the delete worker."
     );
     send_delete_jobs_to_worker(files_list)
         .await
         .inspect_err(|e| error!("{}", e))?;
     info!("finish sending all jobs successfully.");
-    Ok(())
+    Ok(Json(length))
 }
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteRequest {
