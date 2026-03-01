@@ -1,6 +1,6 @@
 use std::{sync::OnceLock, time::Duration};
 
-use crate::{JobError, decrement_delete_count_folder, finalize_copy};
+use crate::{JobError, finalize_copy};
 use anyhow::anyhow;
 use apalis::{
     layers::retry::{
@@ -37,7 +37,9 @@ pub async fn init_apalis(con: &PgPool, rfs: Client, w_names: WorkersName) -> Res
     debug!("getting number of cpus.");
     let cpus = num_cpus::get();
     debug!("setting up job postgres table.");
-    PostgresStorage::setup(con)
+    PostgresStorage::migrations()
+        .set_ignore_missing(true)
+        .run(con)
         .await
         .map_err(|e| {
             JobError::Postgres(anyhow::anyhow!(
@@ -143,11 +145,6 @@ async fn delete_file_rustfs(
         .send()
         .await.inspect_err(|e|
             error!(f_id=?job.record.id,user_id=%job.bucket, "failed to delete from RustFS: {}", e))?; // only fails on transient errors → apalis retries
-    // Update DB: mark file as deleted
-    debug!("decrement the folder delete child counter.");
-    decrement_delete_count_folder(&jobstate.db_pool, job.record.parent_id.unwrap())
-        .await
-        .inspect_err(|e| error!("failed to decrement delete counter: {}", e))?;
     debug!("deleting file success.");
     Ok(())
 }
