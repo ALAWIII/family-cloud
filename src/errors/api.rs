@@ -65,7 +65,8 @@ impl IntoResponse for ApiError {
                 DatabaseError::Duplicate => StatusCode::CONFLICT,    // unique constraint
                 DatabaseError::PoolNotInitialized
                 | DatabaseError::PoolAlreadyInitialized
-                | DatabaseError::Connection(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
+                | DatabaseError::Connection(_)
+                | DatabaseError::DatabaseMigrate(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
             },
 
             // ---------- Redis ----------
