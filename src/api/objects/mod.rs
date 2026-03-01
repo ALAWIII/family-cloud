@@ -31,8 +31,9 @@ pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
             "/api/objects/{id}",
             get(get_metadata).patch(update_metadata),
         )
+        .route("/api/objects/children/{id}", get(list_children))
         .route("/api/objects/{id}/move", post(move_object))
-        .route("/api/objects/{id}/copy", post(copy))
+        .route("/api/objects/copy", post(copy))
         .route("/api/objects/{id}/download", get(download))
         .layer(from_fn_with_state(hmac, validate_jwt_access_token))
         .route("/api/objects/stream", get(stream)) // no need for accepting jwt access token.
