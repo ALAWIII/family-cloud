@@ -1,11 +1,14 @@
-use family_cloud::DeleteRequest;
+use family_cloud::{DeleteRequest, get_user_available_storage, update_user_maximum_storage};
 
-use crate::{create_folders_files_tree, setup_with_authenticated_user, wait_job_until_finishes};
+use crate::{
+    create_folders_files_tree, init_workers, setup_with_authenticated_user, wait_job_until_finishes,
+};
 
 #[tokio::test]
 pub async fn delete_list_of_folders() -> anyhow::Result<()> {
     let (app, account, login_data) = setup_with_authenticated_user().await?;
-    let tree = create_folders_files_tree(&app, &account).await?;
+    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
     let fo2_1 = tree.folders.get(tree.folders.len() - 2).unwrap();
     let fo2_2 = tree.folders.last().unwrap();
     let fi1 = tree.files.first().unwrap();
@@ -44,14 +47,16 @@ pub async fn delete_list_of_folders() -> anyhow::Result<()> {
         .await
         .assert_status_not_found();
     }
-    wait_job_until_finishes(&app.state.db_pool, &tree.workers).await?;
+    wait_job_until_finishes(&app.state.db_pool, &workers).await?;
     Ok(())
 }
 
 #[tokio::test]
 pub async fn delete_list_of_files() -> anyhow::Result<()> {
     let (app, account, login_data) = setup_with_authenticated_user().await?;
-    let tree = create_folders_files_tree(&app, &account).await?;
+    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
 
     let fi1 = tree.files.first().unwrap();
     let fi2 = tree.files.get(1).unwrap();
@@ -85,7 +90,7 @@ pub async fn delete_list_of_files() -> anyhow::Result<()> {
         .await
         .assert_status_not_found();
     }
-    wait_job_until_finishes(&app.state.db_pool, &tree.workers).await?;
+    wait_job_until_finishes(&app.state.db_pool, &workers).await?;
 
     Ok(())
 }
@@ -93,7 +98,8 @@ pub async fn delete_list_of_files() -> anyhow::Result<()> {
 #[tokio::test]
 pub async fn delete_mix_files_folders() -> anyhow::Result<()> {
     let (app, account, login_data) = setup_with_authenticated_user().await?;
-    let tree = create_folders_files_tree(&app, &account).await?;
+    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
     let fo2_2 = tree.folders.last().unwrap();
     let fi3 = tree.files.last().unwrap();
     let d = app
@@ -127,7 +133,7 @@ pub async fn delete_mix_files_folders() -> anyhow::Result<()> {
     )
     .await
     .assert_status_not_found();
-    wait_job_until_finishes(&app.state.db_pool, &tree.workers).await?;
+    wait_job_until_finishes(&app.state.db_pool, &workers).await?;
 
     Ok(())
 }
@@ -142,7 +148,8 @@ pub async fn delete_empty_list() -> anyhow::Result<()> {
 #[tokio::test]
 pub async fn delete_already_deleted_object() -> anyhow::Result<()> {
     let (app, account, login_data) = setup_with_authenticated_user().await?;
-    let tree = create_folders_files_tree(&app, &account).await?;
+    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
     let fo2_2 = tree.folders.last().unwrap();
     let fi3 = tree.files.last().unwrap();
     let d = app
@@ -178,6 +185,33 @@ pub async fn delete_already_deleted_object() -> anyhow::Result<()> {
         )
         .await;
     d.assert_status_success();
-    wait_job_until_finishes(&app.state.db_pool, &tree.workers).await?;
+    wait_job_until_finishes(&app.state.db_pool, &workers).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_file_check_user_space() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let w = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
+    let _i = update_user_maximum_storage(&app.state.db_pool, account.id, 8).await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let before_s_info = get_user_available_storage(&app.state.db_pool, account.id).await?;
+    assert_eq!(before_s_info.storage_quota_bytes, 8);
+    assert_eq!(before_s_info.storage_used_bytes, 6);
+    let req = tree
+        .files
+        .iter()
+        .map(|v| DeleteRequest {
+            f_id: v.id,
+            kind: family_cloud::ObjectKind::File,
+        })
+        .collect::<Vec<_>>();
+    let resp = app.delete(&login_data.access_token, &req).await;
+    resp.assert_status_success();
+    assert_eq!(resp.json::<u32>(), 3);
+    wait_job_until_finishes(&app.state.db_pool, &w).await?;
+    let after_s_info = get_user_available_storage(&app.state.db_pool, account.id).await?;
+    assert_eq!(after_s_info.storage_quota_bytes, 8);
+    assert_eq!(after_s_info.storage_used_bytes, 0);
     Ok(())
 }
