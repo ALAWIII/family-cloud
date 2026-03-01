@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use crate::{
     CopyJobRecord, DatabaseConfig, DatabaseError, DeleteJobRecord, FileDownload, FileRecord,
-    FolderRecord, ObjectStatus, UpdateMetadata, User, UserStorageInfo,
+    FolderChild, FolderRecord, ObjectStatus, UpdateMetadata, User, UserStorageInfo,
 };
 use anyhow::anyhow;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
@@ -26,6 +26,12 @@ pub async fn init_db(db: &DatabaseConfig) -> Result<(), DatabaseError> {
         .connect(&db.url())
         .await
         .inspect_err(|e| error!("failed to establish connection to database: {}", e))?;
+
+    sqlx::migrate!("./migrations")
+        .set_ignore_missing(true)
+        .run(&pool.clone())
+        .await
+        .inspect_err(|e| error!("{e}"))?;
     DB_POOL
         .set(pool)
         .map_err(|_| DatabaseError::PoolAlreadyInitialized)
@@ -373,20 +379,17 @@ pub async fn get_user_available_storage(
 pub async fn fetch_all_user_object_ids(
     con: &PgPool,
     owner_id: Uuid,
-) -> Result<Vec<Uuid>, DatabaseError> {
-    Ok(sqlx::query_scalar!(
+) -> Result<Vec<FolderChild>, DatabaseError> {
+    Ok(sqlx::query_as::<_, FolderChild>(
         r#"
-        SELECT id FROM files  WHERE owner_id = $1
+        SELECT id, 'file'::text as kind FROM files  WHERE owner_id = $1 AND status='active'
         UNION ALL
-        SELECT id FROM folders WHERE owner_id = $1
+        SELECT id, 'folder'::text as kind FROM folders WHERE owner_id = $1 AND status='active'
         "#,
-        owner_id
     )
+    .bind(owner_id)
     .fetch_all(con)
-    .await?
-    .into_iter()
-    .flatten()
-    .collect())
+    .await?)
 }
 pub async fn update_file_metadata(
     con: &PgPool,
@@ -441,20 +444,6 @@ pub async fn mark_file_as(
     .inspect_err(|e| error!("failed to mark file as {} : {}", status, e))?;
     Ok(r.rows_affected())
 }
-pub async fn decrement_delete_count_folder(
-    pool: &PgPool,
-    folder_id: Uuid,
-) -> Result<(), DatabaseError> {
-    sqlx::query!(
-        "UPDATE folders SET deleting_children_count = deleting_children_count - 1 WHERE id = $1",
-        folder_id
-    )
-    .execute(pool)
-    .await
-    .inspect_err(|e| error!("failed to commit delete folders transaction: {}", e))?;
-
-    Ok(())
-}
 
 pub async fn finalize_copy(
     pool: &PgPool,
@@ -475,7 +464,9 @@ pub async fn finalize_copy(
     .inspect_err(|e| error!("failed to mark file as active: {}", e))?;
 
     sqlx::query!(
-        "UPDATE folders SET copying_children_count = copying_children_count - 1 WHERE id = $1",
+        r#"UPDATE folders
+        SET copying_children_count = GREATEST(copying_children_count - 1, 0)
+        WHERE id = $1"#,
         folder_id
     )
     .execute(&mut *tx)
@@ -555,6 +546,9 @@ pub async fn copy_folders(
     dest_folder_id: Uuid, // the new parent id to be attached to the
     owner_id: Uuid,
 ) -> Result<Vec<CopyJobRecord>, DatabaseError> {
+    if folders_ids.is_empty() {
+        return Ok(vec![]);
+    }
     let mut tx = con
         .begin()
         .await
@@ -581,6 +575,9 @@ pub async fn copy_files(
     dest_folder_id: Uuid, // the new parent id to be attached to the
     owner_id: Uuid,
 ) -> Result<Vec<CopyJobRecord>, DatabaseError> {
+    if files_ids.is_empty() {
+        return Ok(vec![]);
+    }
     let mut tx = con
         .begin()
         .await
@@ -599,4 +596,53 @@ pub async fn copy_files(
         .await
         .inspect_err(|e| error!("failed to commit copy files transaction: {}", e))?;
     Ok(files_id)
+}
+
+pub async fn fetch_folder_children(
+    con: &PgPool,
+    f_id: Uuid,
+    owner_id: Uuid,
+) -> Result<Vec<FolderChild>, DatabaseError> {
+    Ok(sqlx::query_as::<_, FolderChild>(
+        r#"
+        SELECT id, 'file'::text AS kind FROM files WHERE parent_id=$1 AND owner_id=$2 AND status='active'
+        UNION ALL
+        SELECT id, 'folder'::text as kind FROM folders WHERE parent_id=$1 AND owner_id=$2 AND status='active'
+        "#,
+    )
+    .bind(f_id)
+    .bind(owner_id)
+    .fetch_all(con)
+    .await?)
+}
+pub async fn increment_storage_used_for_user(
+    con: &PgPool,
+    user_id: Uuid,
+    size: i64,
+) -> Result<u64, DatabaseError> {
+    let r = sqlx::query!(
+        r#"
+        UPDATE users SET storage_used_bytes=storage_used_bytes+$1 WHERE id=$2
+        "#,
+        size,
+        user_id
+    )
+    .execute(con)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+pub async fn update_user_maximum_storage(
+    con: &PgPool,
+    user_id: Uuid,
+    b: i64,
+) -> Result<u64, DatabaseError> {
+    let r = sqlx::query!(
+        r#"UPDATE users SET storage_quota_bytes=$1 WHERE id=$2"#,
+        b,
+        user_id
+    )
+    .execute(con)
+    .await?;
+    Ok(r.rows_affected())
 }
