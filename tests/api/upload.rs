@@ -2,7 +2,7 @@ use axum::{
     body::Bytes,
     http::{StatusCode, header::CONTENT_LENGTH},
 };
-use family_cloud::{FileRecord, FolderRecord};
+use family_cloud::{FileRecord, FolderRecord, update_user_maximum_storage};
 
 use crate::{calculate_checksum, setup_with_authenticated_user, upload_file, upload_folder};
 
@@ -244,5 +244,42 @@ async fn upload_file_invalid_checksum() -> anyhow::Result<()> {
         .bytes(Bytes::from(file_bytes))
         .await;
     assert_eq!(resp.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    Ok(())
+}
+#[tokio::test]
+async fn upload_file_exceed_available_storage() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    update_user_maximum_storage(&app.state.db_pool, account.id, 2).await?;
+    let file_bytes = vec![0u8; 20];
+    let checksum = calculate_checksum(&file_bytes);
+    let resp = app
+        .upload(&login_data.access_token, account.root_folder().unwrap())
+        .add_header("Object-Type", "file")
+        .add_header("Object-Name", "shawarma.txt")
+        .add_header("x-amz-checksum-sha256", &checksum)
+        .add_header(CONTENT_LENGTH, file_bytes.len())
+        .content_type("text/plain")
+        .bytes(Bytes::from(file_bytes))
+        .await;
+    resp.assert_status_payload_too_large();
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_file_exceed_available_storage_fake_content_length() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    update_user_maximum_storage(&app.state.db_pool, account.id, 5).await?;
+    let file_bytes = vec![0u8; 20];
+    let checksum = calculate_checksum(&file_bytes);
+    let resp = app
+        .upload(&login_data.access_token, account.root_folder().unwrap())
+        .add_header("Object-Type", "file")
+        .add_header("Object-Name", "shawarma.txt")
+        .add_header("x-amz-checksum-sha256", &checksum)
+        .add_header(CONTENT_LENGTH, 4)
+        .content_type("text/plain")
+        .bytes(Bytes::from(file_bytes))
+        .await;
+    resp.assert_status_payload_too_large();
     Ok(())
 }
