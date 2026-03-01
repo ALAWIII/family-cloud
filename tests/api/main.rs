@@ -7,10 +7,11 @@ use axum::{body::Bytes, extract::connect_info::MockConnectInfo};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use family_cloud::{
     FileRecord, FolderRecord, LoginResponse, TokenOptions, WorkersName, create_user_bucket,
-    get_rustfs, init_apalis, init_tracing, insert_folder, upsert_file,
+    get_rustfs, init_apalis, init_tracing,
 };
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 pub use utils::*;
+mod copy;
 mod delete;
 mod download;
 mod upload;
@@ -156,13 +157,12 @@ pub async fn init_workers(con: &PgPool, rfs: Client) -> anyhow::Result<WorkersNa
 pub struct Tree {
     pub folders: Vec<FolderRecord>,
     pub files: Vec<FileRecord>,
-    pub workers: WorkersName,
 }
 
 async fn wait_job_until_finishes(con: &PgPool, workers: &WorkersName) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(600), async {
         loop {
-            let value = sqlx::query!(
+            let value = sqlx::query(
                 r#"SELECT (
                     -- Phase 1: jobs must exist first
                     (
@@ -175,13 +175,13 @@ async fn wait_job_until_finishes(con: &PgPool, workers: &WorkersName) -> anyhow:
                     SELECT COUNT(*)
                         FROM apalis.jobs j
                      WHERE j.job_type IN ($1,$2) AND j.done_at IS NULL) = 0
-                ) AS "done!: bool""#,
-                workers.delete,
-                workers.copy,
+                ) AS done "#,
             )
+            .bind(&workers.delete)
+            .bind(&workers.copy)
             .fetch_one(con)
             .await?;
-            if value.done {
+            if value.get("done") {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -192,27 +192,39 @@ async fn wait_job_until_finishes(con: &PgPool, workers: &WorkersName) -> anyhow:
     .expect("worker did not finish in time")?;
     Ok(())
 }
-async fn create_folders_files_tree(app: &AppTest, account: &TestAccount) -> anyhow::Result<Tree> {
-    let workers = init_workers(&app.state.db_pool, app.state.rustfs_con.clone()).await?;
-    let fo1 = FolderRecord::new(account.id, account.root_folder, "fo1".to_string());
-    let fo2 = FolderRecord::new(account.id, Some(fo1.id), "fo2".to_string());
-    let fo2_1 = FolderRecord::new(account.id, Some(fo2.id), "fo2_1".to_string());
-    let fo2_2 = FolderRecord::new(account.id, Some(fo2.id), "fo2_2".to_string());
-    let fi1 = FileRecord::new(account.id, fo2_2.id, "fi1_2".to_string());
-    let fi2 = FileRecord::new(account.id, fo2_2.id, "fi2_2".to_string());
-    let fi3 = FileRecord::new(account.id, fo1.id, "fi1_1".to_string());
+async fn create_folders_files_tree(
+    app: &AppTest,
+    account: &TestAccount,
+    jwt: &str,
+) -> anyhow::Result<Tree> {
+    let fo1 = upload_folder(
+        app,
+        &Uuid::new_v4().to_string(),
+        account.root_folder().unwrap(),
+        jwt,
+    )
+    .await;
+    let fo2 = upload_folder(app, &Uuid::new_v4().to_string(), fo1.id, jwt).await;
+    let fo2_1 = upload_folder(app, &Uuid::new_v4().to_string(), fo2.id, jwt).await;
+    let fo2_2 = upload_folder(app, &Uuid::new_v4().to_string(), fo2.id, jwt).await;
+    let fi1 = upload_file(
+        app,
+        &Uuid::new_v4().to_string(),
+        fo2_2.id,
+        vec![0u8, 5],
+        jwt,
+    )
+    .await;
+    let fi2 = upload_file(
+        app,
+        &Uuid::new_v4().to_string(),
+        fo2_2.id,
+        vec![0u8, 5],
+        jwt,
+    )
+    .await;
+    let fi3 = upload_file(app, &Uuid::new_v4().to_string(), fo1.id, vec![0u8, 5], jwt).await;
     let folders = vec![fo1, fo2, fo2_1, fo2_2];
     let files = vec![fi1, fi2, fi3];
-    for fo in &folders {
-        insert_folder(&app.state.db_pool, fo).await?;
-    }
-    for fi in &files {
-        upsert_file(&app.state.db_pool, fi).await?;
-    }
-
-    Ok(Tree {
-        folders,
-        files,
-        workers,
-    })
+    Ok(Tree { folders, files })
 }
