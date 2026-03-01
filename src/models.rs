@@ -337,13 +337,15 @@ pub struct DownloadTokenData {
     pub object_d: FileSystemObject,
     pub ip_address: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
-#[sqlx(type_name = "object_kind_type", rename_all = "PascalCase")]
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, sqlx::Type, Hash)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum ObjectKind {
     File,
     Folder,
 }
+
 impl Display for ObjectKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -435,11 +437,14 @@ pub struct FileRecord {
 
 impl FileRecord {
     pub fn new(owner_id: Uuid, parent_id: Uuid, name: String) -> Self {
+        let date = Utc::now();
         Self {
             id: Uuid::new_v4(),
             owner_id,
             parent_id,
             name,
+            created_at: date,
+            last_modified: date,
             ..Default::default()
         }
     }
@@ -503,7 +508,6 @@ impl IntoResponse for FileRecord {
 pub struct FolderRecord {
     pub id: Uuid,
     pub copying_children_count: i32,
-    pub deleting_children_count: i32,
     pub owner_id: Uuid,
     pub parent_id: Option<Uuid>, // folder
     pub name: String,
@@ -514,12 +518,14 @@ pub struct FolderRecord {
 }
 impl FolderRecord {
     pub fn new(owner_id: Uuid, parent_id: Option<Uuid>, name: String) -> Self {
+        let date = Utc::now();
         let f_id = Uuid::new_v4();
         Self {
             id: f_id,
             owner_id,
             parent_id,
             name,
+            created_at: date,
             ..Default::default()
         }
     }
@@ -568,4 +574,11 @@ impl FileDownload {
     pub fn zip_path_ref(&self) -> &str {
         &self.zip_path
     }
+}
+#[derive(Debug, sqlx::FromRow, Derivative, Serialize, Deserialize)]
+#[derivative(Hash, PartialEq, Eq)]
+pub struct FolderChild {
+    #[derivative(Hash, PartialEq)]
+    pub id: Uuid,
+    pub kind: ObjectKind,
 }
