@@ -1,7 +1,7 @@
 use crate::{
     ApiError, AppState, Claims, FileRecord, FolderRecord, ObjectKind, ObjectStatus, RustFSError,
-    get_user_available_storage, insert_folder, is_file_exists, is_folder_exists, upsert_file,
-    validate_display_name,
+    get_user_available_storage, increment_storage_used_for_user, insert_folder, is_file_exists,
+    is_folder_exists, upsert_file, validate_display_name,
 };
 use anyhow::anyhow;
 use aws_sdk_s3::Client;
@@ -210,6 +210,13 @@ pub async fn upload(
     upsert_file(&appstate.db_pool, &file)
         .await
         .inspect_err(|e| error!("database updating metadata failed: {}", e))?;
+    increment_storage_used_for_user(
+        &appstate.db_pool,
+        claims.sub,
+        stream_result.file_size as i64,
+    )
+    .await
+    .inspect_err(|e| error!("failed to increment storage for a user: {e}"))?;
     info!("new file uploaded successfully.");
     Ok((StatusCode::CREATED, file).into_response())
 }
