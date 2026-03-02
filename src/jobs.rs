@@ -1,5 +1,3 @@
-use std::{sync::OnceLock, time::Duration};
-
 use crate::{JobError, finalize_copy};
 use anyhow::anyhow;
 use apalis::{
@@ -9,6 +7,8 @@ use apalis::{
     },
     prelude::*,
 };
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+use std::{sync::OnceLock, time::Duration};
 
 use apalis::layers::retry::HasherRng;
 use apalis_codec::json::JsonCodec;
@@ -25,6 +25,7 @@ use tracing::{debug, error, instrument};
 use uuid::Uuid;
 type SharedStorage<J> = PostgresStorage<J, Vec<u8>, JsonCodec<Vec<u8>>, SharedFetcher>;
 
+const MULTIPART_THRESHOLD: i64 = 4 * 1024 * 1024 * 1024;
 static DELETE_SENDER: OnceLock<Sender<DeleteJob>> = OnceLock::new();
 static COPY_SENDER: OnceLock<Sender<CopyJob>> = OnceLock::new();
 
@@ -185,16 +186,50 @@ async fn copy_file_rustfs(
             return Err(e.into());
         }
     }
+    let f_source_info = f_source_info.unwrap();
+    let size = f_source_info.content_length().unwrap_or(0);
     // 2. Always overwrite destination (handles partial + full copy cases)
-    debug!("sending copy object request to RustFS.");
-    client
-        .copy_object()
-        .bucket(&bucket)
-        .copy_source(format!("{}/{}", bucket, src_key))
-        .key(&dst_key)
-        .send()
-        .await
-        .inspect_err(|e| error!("failed to copy object: {}", e))?; // transient failure — apalis retries
+    debug!(file_size = size, "sending copy object request to RustFS.");
+    if size <= MULTIPART_THRESHOLD {
+        client
+            .copy_object()
+            .bucket(&bucket)
+            .copy_source(format!("{}/{}", bucket, src_key))
+            .key(&dst_key)
+            .send()
+            .await
+            .inspect_err(|e| error!("failed to copy object: {}", e))?; // transient failure — apalis retries
+    } else {
+        debug!(file_size = size, "create multi-part upload copy.");
+        // Step 1: Initiate multipart upload — RustFS reserves a slot and returns an upload_id
+        // All subsequent parts must reference this upload_id
+        let upload = client
+            .create_multipart_upload()
+            .bucket(&bucket)
+            .key(&dst_key)
+            .send()
+            .await?;
+        let upload_id = upload.upload_id().unwrap();
+        let resp = multipart_copy(client, &bucket, &src_key, &dst_key, size, upload_id).await;
+        // if multipart_copy returns Err, abort the upload
+        if let Err(e) = resp {
+            error!(
+                bucket = bucket,
+                source_file = src_key,
+                "error happend due copying object, cleaning orphaned parts : {}",
+                e
+            );
+            let _ = client
+                .abort_multipart_upload()
+                .bucket(bucket)
+                .key(dst_key)
+                .upload_id(upload_id) // need to pass this out of the fn for this
+                .send()
+                .await;
+            debug!("abortion success.");
+            return Err(e);
+        }
+    }
     // update database and insert the new record in files!!
     debug!("marks file status as active and decrementing folder copying counter.");
     finalize_copy(
@@ -302,5 +337,80 @@ pub async fn send_copy_jobs_to_worker(f_ids: Vec<CopyJob>) -> Result<(), JobErro
             .await
             .map_err(|e| JobError::Send(anyhow!("Sending copy job error: {}", e)))?;
     }
+    Ok(())
+}
+
+const PART_SIZE: i64 = 100 * 1024 * 1024; // 100MB per part (min 5MB, max 5GB)
+
+pub async fn multipart_copy(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    src_key: &str,
+    dst_key: &str,
+    file_size: i64,
+    upload_id: &str,
+) -> Result<(), BoxDynError> {
+    debug!("start multipart copy.");
+    let mut completed_parts: Vec<CompletedPart> = Vec::new();
+    // byte_offset serves as the starting byte on every new part copy request and tracks where the next part starts.
+    let mut byte_offset: i64 = 0;
+    let mut part_number: i32 = 1;
+
+    // Step 2: Copy the source object in 100MB chunks
+    // Each part is a server-side range copy — no data flows through your app
+    while byte_offset < file_size {
+        // Calculate inclusive end byte for this part; clamp to last valid byte (file_size - 1) to avoid out-of-bounds range
+        let end = (byte_offset + PART_SIZE - 1).min(file_size - 1);
+        debug!(
+            part_number = part_number,
+            start_byte = byte_offset,
+            end_byte = end,
+            "requesting a copy for a given part"
+        );
+        let part_result = client
+            .upload_part_copy()
+            .bucket(bucket)
+            .key(dst_key)
+            .upload_id(upload_id)
+            .copy_source(format!("{}/{}", bucket, src_key))
+            .copy_source_range(format!("bytes={}-{}", byte_offset, end)) // byte range of source
+            .part_number(part_number)
+            .send()
+            .await?;
+        debug!("extracting the etag from the response.");
+        // Collect the ETag returned for each part — required for the final complete call
+        let etag = part_result
+            .copy_part_result()
+            .and_then(|r| r.e_tag())
+            .unwrap_or_default()
+            .to_string();
+        debug!("storing a new finished part.");
+        completed_parts.push(
+            CompletedPart::builder()
+                .e_tag(etag)
+                .part_number(part_number)
+                .build(),
+        );
+        debug!("incrementing the part_number and the byte_offset.");
+        byte_offset = end + 1;
+        part_number += 1;
+    }
+
+    // Step 3: Finalize — tell RustFS to assemble all parts into one object
+    // Until this call, the destination object does NOT exist yet
+    debug!("running complete multipart upload copy request.");
+    client
+        .complete_multipart_upload()
+        .bucket(bucket)
+        .key(dst_key)
+        .upload_id(upload_id)
+        .multipart_upload(
+            CompletedMultipartUpload::builder()
+                .set_parts(Some(completed_parts))
+                .build(),
+        )
+        .send()
+        .await?;
+    debug!("copying new object success.");
     Ok(())
 }
