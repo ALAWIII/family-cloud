@@ -33,7 +33,7 @@ updated_counts AS (
     SET copying_children_count = copying_children_count + (SELECT COUNT(*) FROM inserted)
     WHERE id = $2 AND (SELECT has_space FROM check_space)
 )
-SELECT fmap.source_id AS source_file_id, ins.id AS new_file_id, ins.parent_id AS new_parent_folder_id, ins.size as size
+SELECT fmap.source_id AS source_file_id, ins.id AS new_file_id, ins.parent_id AS new_parent_folder_id
 FROM inserted ins
 JOIN file_mapping fmap ON fmap.dest_id = ins.id
 WHERE (SELECT has_space FROM check_space);

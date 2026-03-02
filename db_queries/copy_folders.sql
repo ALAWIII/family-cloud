@@ -128,8 +128,7 @@ updated_counts AS (
 SELECT
     fmap.source_id AS source_file_id,        -- original file ID
     ins.id AS new_file_id,                   -- new copied file ID
-    ins.parent_id AS new_parent_folder_id,   -- new folder it was placed in
-    ins.size as size
+    ins.parent_id AS new_parent_folder_id   -- new folder it was placed in
 FROM inserted_files ins
 -- Re-join file_mapping to get the source_id (RETURNING doesn't include it)
 JOIN file_mapping fmap ON fmap.dest_id = ins.id
