@@ -188,6 +188,38 @@ async fn move_folder_upper_tree_levels() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn move_folder_at_same_tree_level() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let fo2_2 = tree.folders.last().unwrap();
+    let fo2_1 = tree.folders.get(tree.folders.len() - 2).unwrap();
+    let mvreq = MoveRequest {
+        source_id: fo2_2.id,
+        destination_id: fo2_1.id,
+        object_kind: family_cloud::ObjectKind::Folder,
+    };
+    let resp = app.move_obj(&login_data.access_token, mvreq).await;
+    resp.assert_status_success();
+    let dest_children = app
+        .list_children(&login_data.access_token, fo2_1.id)
+        .await
+        .json::<Vec<FolderChild>>();
+    assert!(
+        dest_children.iter().any(|f| f.id == fo2_2.id),
+        "fo2_1 must be the new parent of fo2_2 "
+    );
+    let old_parent_children = app
+        .list_children(&login_data.access_token, fo2_2.parent_id.unwrap())
+        .await
+        .json::<Vec<FolderChild>>();
+    assert!(
+        !old_parent_children.iter().any(|f| f.id == fo2_2.id),
+        "fo2_2 parent must not include fo2_2 as a child because its already moved."
+    );
+
+    Ok(())
+}
+#[tokio::test]
 async fn move_folder_to_be_a_child_of_itself() -> anyhow::Result<()> {
     let (app, account, login_data) = setup_with_authenticated_user().await?;
     let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
