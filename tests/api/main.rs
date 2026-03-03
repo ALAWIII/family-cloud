@@ -9,11 +9,13 @@ use family_cloud::{
     FileRecord, FolderRecord, LoginResponse, TokenOptions, WorkersName, create_user_bucket,
     get_rustfs, init_apalis, init_tracing,
 };
+
 use sqlx::{PgPool, Row};
 pub use utils::*;
 mod copy;
 mod delete;
 mod download;
+mod move_obj;
 mod upload;
 use axum::http::header::CONTENT_LENGTH;
 // ============================================================================
@@ -31,7 +33,7 @@ pub fn calculate_checksum(f: &[u8]) -> String {
 /// Helper to initialize complete test infrastructure
 pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_cloud::AppState)> {
     dotenv::dotenv()?;
-    init_tracing("familycloud", "family_cloud=error,warn", "./family_cloud")?;
+    init_tracing("familycloud", "family_cloud=info,warn", "./family_cloud")?;
     let mut mailhog_server = None;
     if mhog_cont {
         mailhog_server = Some(init_test_containers().await?);

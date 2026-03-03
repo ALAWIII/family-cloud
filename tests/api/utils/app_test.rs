@@ -3,7 +3,7 @@
 use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
-use family_cloud::{AppState, CopyRequest, DeleteRequest, ObjectKind, UpdateMetadata};
+use family_cloud::{AppState, CopyRequest, DeleteRequest, MoveRequest, ObjectKind, UpdateMetadata};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -243,6 +243,13 @@ impl AppTest {
             .post("/api/objects/copy")
             .authorization_bearer(jwt)
             .json(body)
+            .await
+    }
+    pub async fn move_obj(&self, jwt: &str, mvreq: MoveRequest) -> TestResponse {
+        self.server
+            .post("/api/objects/move")
+            .authorization_bearer(jwt)
+            .json(&mvreq)
             .await
     }
 }
