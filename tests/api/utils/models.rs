@@ -14,6 +14,8 @@ pub struct TestAccount {
     pub email: String,
     pub password: String,
     pub password_hash: String,
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
 }
 
 impl TestAccount {
@@ -34,6 +36,8 @@ impl TestAccount {
             email: email.into(),
             password: password_str,
             password_hash,
+            storage_quota_bytes: 2147483648,
+            storage_used_bytes: 0,
         })
     }
 
@@ -76,6 +80,8 @@ impl Default for TestAccount {
             email: format!("{}@test.com", id),
             password,
             password_hash,
+            storage_quota_bytes: 2147483648,
+            storage_used_bytes: 0,
         }
     }
 }

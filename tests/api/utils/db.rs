@@ -22,6 +22,8 @@ impl TestDatabase {
         );
         user.set_root_folder(folder.id);
         account.root_folder = Some(folder.id);
+        account.storage_quota_bytes = user.storage_quota_bytes;
+        account.storage_used_bytes = user.storage_used_bytes;
         insert_user_with_root_folder(&user, &folder, pool).await?;
         Ok(account)
     }

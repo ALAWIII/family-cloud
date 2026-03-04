@@ -267,4 +267,10 @@ impl AppTest {
             }))
             .await
     }
+    pub async fn fetch_user_storage_info(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/storage/usage")
+            .authorization_bearer(jwt)
+            .await
+    }
 }
