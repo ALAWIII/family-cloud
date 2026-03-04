@@ -252,4 +252,19 @@ impl AppTest {
             .json(&mvreq)
             .await
     }
+    pub async fn get_user_profile(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/users/me")
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn update_username(&self, jwt: &str, new_name: &str) -> TestResponse {
+        self.server
+            .patch("/api/users/me")
+            .authorization_bearer(jwt)
+            .json(&json!({
+                "user_name" : new_name
+            }))
+            .await
+    }
 }
