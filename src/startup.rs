@@ -27,14 +27,15 @@ pub fn setup_app(settings: AppSettings) -> Result<AppState, ApiError> {
 }
 //---------------------------------------server---------------------------------------
 pub fn build_router(state: AppState) -> Result<Router, ApiError> {
+    let hmac = state.settings.secrets.hmac.clone();
     let router = Router::new()
         .merge(authentication())
-        .merge(user_management())
-        .merge(storage_objects(state.settings.secrets.hmac.clone()))
+        .merge(user_management(hmac.clone()))
+        .merge(storage_objects(hmac.clone()))
         .merge(sharing_object())
-        .merge(storage_status())
+        .merge(storage_status(hmac.clone()))
         .merge(pswd_router())
-        .merge(change_email_router(state.settings.secrets.hmac.clone()))
+        .merge(change_email_router(hmac.clone()))
         .with_state(state)
         .layer(axum::middleware::from_fn(tracing_middleware));
     Ok(router)
