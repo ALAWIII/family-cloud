@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use crate::{
     CopyJobRecord, DatabaseConfig, DatabaseError, DeleteJobRecord, FileDownload, FileRecord,
-    FolderChild, FolderRecord, ObjectStatus, UpdateMetadata, User, UserStorageInfo,
+    FolderChild, FolderRecord, ObjectStatus, UpdateMetadata, User, UserProfile, UserStorageInfo,
 };
 use anyhow::anyhow;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
@@ -153,7 +153,24 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     .inspect_err(|e| error!("{}", e))
     // if user not found !!
 }
-
+pub async fn fetch_profile_info(
+    con: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<UserProfile>, DatabaseError> {
+    let v = sqlx::query_as!(
+        UserProfile,
+        r#"
+        SELECT id,root_folder, username, email, created_at,
+        storage_quota_bytes, storage_used_bytes
+        FROM users
+        WHERE id=$1
+        "#,
+        user_id
+    )
+    .fetch_optional(con)
+    .await?;
+    Ok(v)
+}
 /// Check if email exists/verified and stored in database. (returns user_id)
 pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>, DatabaseError> {
     debug!(
@@ -214,7 +231,23 @@ pub async fn update_account_password(
     .await
     .inspect_err(|e| error!("database error: {}", e))?)
 }
-
+pub async fn update_account_username(
+    con: &PgPool,
+    user_id: Uuid,
+    username: &str,
+) -> Result<String, DatabaseError> {
+    let v = sqlx::query!(
+        r#"
+        UPDATE users SET username=$1 WHERE id=$2
+        RETURNING username
+        "#,
+        username,
+        user_id
+    )
+    .fetch_one(con)
+    .await?;
+    Ok(v.username)
+}
 //------------------------------------------ database object download endpoint fetch ----------------------
 // FIX: Tell sqlx to treat this column as your Rust type 'ObjectStatus'
 
