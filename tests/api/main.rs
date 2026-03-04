@@ -16,7 +16,9 @@ mod copy;
 mod delete;
 mod download;
 mod move_obj;
+mod storage;
 mod upload;
+mod users;
 use axum::http::header::CONTENT_LENGTH;
 // ============================================================================
 // Shared Test Setup - Initialize All Infrastructure
