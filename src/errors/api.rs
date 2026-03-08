@@ -51,6 +51,8 @@ pub enum ApiError {
     ChecksumMismatch,
     #[error("unexpected job error : {0}")]
     Job(#[from] JobError),
+    #[error("object access not allowed")]
+    Forbidden,
 }
 
 impl IntoResponse for ApiError {
@@ -111,6 +113,7 @@ impl IntoResponse for ApiError {
             ApiError::ObjectTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::ChecksumMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::Job(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Forbidden => StatusCode::FORBIDDEN,
         };
 
         status.into_response()
