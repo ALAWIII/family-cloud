@@ -19,6 +19,8 @@ mod copy;
 mod move_obj;
 pub use copy::*;
 pub use move_obj::*;
+mod shares;
+pub use shares::*;
 
 //--------------------------------------objects manipulation ----------------------
 pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
@@ -35,6 +37,7 @@ pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
         .route("/api/objects/move", post(move_object))
         .route("/api/objects/copy", post(copy))
         .route("/api/objects/{id}/download", get(download))
+        .route("/api/objects/shares", post(create_link_share))
         .layer(from_fn_with_state(hmac, validate_jwt_access_token))
         .route("/api/objects/stream", get(stream)) // no need for accepting jwt access token.
 }
