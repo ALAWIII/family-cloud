@@ -5,8 +5,10 @@ use crate::{
     FolderChild, FolderRecord, ObjectStatus, UpdateMetadata, User, UserProfile, UserStorageInfo,
 };
 use anyhow::anyhow;
-use sqlx::postgres::{PgPool, PgPoolOptions, PgQueryResult};
-use sqlx::{Postgres, Transaction};
+use sqlx::{
+    postgres::{PgPool, PgPoolOptions, PgQueryResult, PgRow},
+    {FromRow, Postgres, Transaction},
+};
 use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
@@ -678,4 +680,22 @@ pub async fn update_user_maximum_storage(
     .execute(con)
     .await?;
     Ok(r.rows_affected())
+}
+pub async fn validate_object_ancestor<T>(
+    con: &PgPool,
+    owner_id: Uuid,
+    grand_p_id: Uuid,
+    f_id: Uuid,
+    query: &str,
+) -> Result<Option<T>, DatabaseError>
+where
+    T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+{
+    let r = sqlx::query_as::<_, T>(query)
+        .bind(f_id)
+        .bind(owner_id)
+        .bind(grand_p_id)
+        .fetch_optional(con)
+        .await?;
+    Ok(r)
 }
