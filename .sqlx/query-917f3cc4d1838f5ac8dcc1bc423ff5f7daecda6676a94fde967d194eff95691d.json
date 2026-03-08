@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE files\n        SET metadata = COALESCE(metadata, '{}'::jsonb) || $1\n        WHERE id = $2 AND owner_id = $3\n        RETURNING metadata\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "917f3cc4d1838f5ac8dcc1bc423ff5f7daecda6676a94fde967d194eff95691d"
+}

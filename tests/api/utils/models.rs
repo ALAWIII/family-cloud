@@ -9,10 +9,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize)]
 pub struct TestAccount {
     pub id: Uuid,
+    pub root_folder: Option<Uuid>,
     pub username: String,
     pub email: String,
     pub password: String,
     pub password_hash: String,
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
 }
 
 impl TestAccount {
@@ -28,10 +31,13 @@ impl TestAccount {
 
         Ok(Self {
             id,
+            root_folder: None,
             username: username.into(),
             email: email.into(),
             password: password_str,
             password_hash,
+            storage_quota_bytes: 2147483648,
+            storage_used_bytes: 0,
         })
     }
 
@@ -39,6 +45,9 @@ impl TestAccount {
     pub fn with_email(mut self, email: impl Into<String>) -> Self {
         self.email = email.into();
         self
+    }
+    pub fn root_folder(&self) -> Option<Uuid> {
+        self.root_folder
     }
 
     /// Fluent API: Set password and rehash
@@ -66,10 +75,13 @@ impl Default for TestAccount {
 
         Self {
             id,
+            root_folder: None,
             username: format!("user_{}", id),
             email: format!("{}@test.com", id),
             password,
             password_hash,
+            storage_quota_bytes: 2147483648,
+            storage_used_bytes: 0,
         }
     }
 }

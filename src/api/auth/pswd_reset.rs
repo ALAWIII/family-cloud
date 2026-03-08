@@ -12,11 +12,11 @@ use serde::Deserialize;
 use tracing::{error, info, instrument};
 
 use crate::{
-    ApiError, AppState, EmailInput, EmailSender, TokenPayload, User, UserVerification,
-    create_verification_key, decode_token, delete_token_from_redis, deserialize_content,
-    encode_token, fetch_account_info, generate_token_bytes, get_redis_con, get_verification_data,
-    hash_password, hash_token, is_token_exist, password_reset_body, serialize_content,
-    store_token_redis, update_account_password,
+    ApiError, AppState, EmailError, EmailInput, EmailSender, TokenPayload, User, UserVerification,
+    create_redis_key, decode_token, delete_token_from_redis, deserialize_content, encode_token,
+    fetch_account_info, fetch_redis_data, generate_token_bytes, get_redis_con, hash_password,
+    hash_token, is_token_exist, password_reset_body, serialize_content, store_token_redis,
+    update_account_password,
 };
 //const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
 
@@ -54,7 +54,11 @@ pub async fn password_reset(
     };
     let secret = appstate.settings.secrets.hmac.expose_secret();
 
-    let from_sender = appstate.settings.email.from_sender;
+    let from_sender = appstate
+        .settings
+        .email
+        .ok_or(EmailError::ClientNotInitialized)?
+        .from_sender;
     let app_url = appstate.settings.app.url();
     info!(
         "generating new password reset token ,hashing it and create a redis key for it, to verify the request."
@@ -62,23 +66,38 @@ pub async fn password_reset(
     let token = generate_token_bytes(32)?;
     let raw_token = encode_token(&token);
     let hashed_token = hash_token(&token, secret)?;
-    let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
+    let key = create_redis_key(crate::TokenType::PasswordReset, &hashed_token);
     //---------------------
     info!("storing the password reset token in redis with its user contents");
     let content = serialize_content(&user_info)?;
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
-    store_token_redis(&mut redis_con, &key, &content, 5 * 60).await?;
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    store_token_redis(
+        &mut redis_con,
+        &key,
+        &content,
+        appstate.settings.token_options.password_reset_token * 60,
+    )
+    .await?;
 
     //---------------------------------
     info!("Sending Password Reset email verification.");
     let reset_link = format!("{}/api/auth/password-reset?token={}", app_url, raw_token);
-    let body = password_reset_body(&user_info.username, &reset_link, 5, "family cloud");
+    let body = password_reset_body(
+        &user_info.username,
+        &reset_link,
+        appstate.settings.token_options.password_reset_token as u32,
+        "family cloud",
+    );
     EmailSender::default()
         .from_sender(from_sender)
         .email_recipient(pswd_info.email)
         .subject("Password reset account".into())
         .email_body(body)
-        .send_email(appstate.mail_client)
+        .send_email(
+            appstate
+                .mail_client
+                .ok_or(EmailError::ClientNotInitialized)?,
+        )
         .await?;
     info!("Password Reset Success");
     Ok(StatusCode::OK)
@@ -94,17 +113,19 @@ pub async fn verify_password_reset(
     let secret = appstate.settings.secrets.hmac.expose_secret();
     let decoded_token = decode_token(raw_token.token.expose_secret())?;
     let hashed_token = hash_token(&decoded_token, secret)?;
-    let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
+    let key = create_redis_key(crate::TokenType::PasswordReset, &hashed_token);
 
     info!("searching redis if the password verification token still valid.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
     let token_exist = is_token_exist(&mut redis_con, &key).await?;
     token_exist
         .then(|| {
             info!("password reset token is valid, responding password form.");
             password_form_page(raw_token.token.expose_secret())
         })
-        .ok_or(ApiError::BadRequest)
+        .ok_or(ApiError::BadRequest(anyhow::anyhow!(
+            "token not existed in redis database"
+        )))
 }
 #[instrument(skip_all)]
 pub async fn confirm_password_reset(
@@ -114,17 +135,19 @@ pub async fn confirm_password_reset(
     info!("confirming password reset request.");
     if form.new_password != form.confirm_password {
         error!("new password and its confirmation does not match.");
-        return Err(ApiError::BadRequest); // malformed ,invalid password matching
+        return Err(ApiError::BadRequest(anyhow::anyhow!(
+            "new password and its confirmation does not match."
+        ))); // malformed ,invalid password matching
     }
     info!("decoding and hashing the confirmation token.");
     let secret = appstate.settings.secrets.hmac.expose_secret();
     let token_byte = decode_token(&form.token)?;
     let hashed_token = hash_token(&token_byte, secret)?;
-    let key = create_verification_key(crate::TokenType::PasswordReset, &hashed_token);
+    let key = create_redis_key(crate::TokenType::PasswordReset, &hashed_token);
 
     info!("fetching redis by the password confirmation hashed token.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
-    let udata = get_verification_data(&mut redis_con, &key)
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    let udata = fetch_redis_data(&mut redis_con, &key)
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let user_ver = deserialize_content::<UserVerification>(&udata)?;

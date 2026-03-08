@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id\n        FROM folders\n        WHERE parent_id=$1 AND owner_id=$2 AND status !='deleted' AND name=$3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9468a7d7d85a78b2fa5589f2c2a67d38d1fc1875db805141d34e7b5077df640a"
+}

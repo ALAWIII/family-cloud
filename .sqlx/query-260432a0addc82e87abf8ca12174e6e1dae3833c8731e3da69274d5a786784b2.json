@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE files\n        SET status=$1\n        WHERE id=ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "object_status",
+            "kind": {
+              "Enum": [
+                "active",
+                "deleted",
+                "deleting",
+                "uploading",
+                "copying"
+              ]
+            }
+          }
+        },
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "260432a0addc82e87abf8ca12174e6e1dae3833c8731e3da69274d5a786784b2"
+}

@@ -1,5 +1,5 @@
 -- Add migration script here
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id UUID CONSTRAINT user_pk PRIMARY KEY,
   username VARCHAR(50) constraint users_username_nn NOT NULL, -- set on signup for the first time
   email VARCHAR(255) UNIQUE NOT NULL,

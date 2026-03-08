@@ -3,7 +3,7 @@ use std::fmt::Display;
 use crate::ApiError;
 use config::{Config as ConfigBuilder, File};
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum LogLevel {
@@ -39,10 +39,11 @@ impl<'de> Deserialize<'de> for LogLevel {
 pub struct AppSettings {
     pub app: AppConfig,
     pub database: DatabaseConfig,
-    pub email: EmailConfig,
+    pub email: Option<EmailConfig>,
     pub rustfs: RustfsConfig,
     pub secrets: Secrets,
     pub redis: RedisConfig,
+    pub token_options: TokenOptions,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +92,16 @@ pub struct Secrets {
 pub struct RedisConfig {
     pub host: String,
     pub port: u16,
+}
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct TokenOptions {
+    pub max_concurrent_download: u64,
+    pub password_reset_token: u64,
+    pub download_token_ttl: u64,
+    pub change_email_token: u64,
+    pub refresh_token: u64,
+    pub signup_token: u64,
+    pub jwt_token: u64,
 }
 
 impl AppConfig {

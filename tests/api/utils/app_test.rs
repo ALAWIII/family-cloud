@@ -1,22 +1,23 @@
 //! Application test harness with HTTP request helpers
 
-use axum::Router;
+use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
-use axum_test::{TestResponse, TestServer};
-use family_cloud::AppState;
+use axum_test::{TestRequest, TestResponse, TestServer};
+use family_cloud::{
+    AccessQuery, AppState, CopyRequest, DeleteRequest, MoveRequest, ObjectKind, SharedObjectReq,
+    UpdateMetadata,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
-
-use crate::TestContainers;
+use uuid::Uuid;
 
 use super::MailHogClient;
 
 /// Main test harness for authentication endpoints
 pub struct AppTest {
-    pub containers: TestContainers,
     pub state: AppState,
     server: TestServer,
-    pub mailhog: MailHogClient,
+    pub mailhog: Option<MailHogClient>,
 }
 
 impl AppTest {
@@ -24,14 +25,11 @@ impl AppTest {
     pub fn new(
         app: Router,
         state: AppState,
-        mailhog_url: impl Into<String>,
-        containers: TestContainers,
+        mailhog: Option<MailHogClient>,
     ) -> anyhow::Result<Self> {
         let server = TestServer::new(app)?;
-        let mailhog = MailHogClient::new(mailhog_url);
 
         Ok(Self {
-            containers,
             state,
             server,
             mailhog,
@@ -175,24 +173,125 @@ impl AppTest {
             .add_header("Content-Type", "application/json")
             .await
     }
-
-    /// Helper: Get authorization header
-    pub fn auth_header(access_token: &str) -> (String, String) {
-        (
-            "Authorization".to_string(),
-            format!("Bearer {}", access_token),
-        )
+    /// Post /api/objects
+    pub fn upload(&self, jwt: &str, parent_id: Uuid) -> TestRequest {
+        self.server
+            .post(&format!("/api/objects?parent_id={}", parent_id))
+            .authorization_bearer(jwt)
     }
-}
+    pub async fn download_token(
+        &self,
+        jwt: &str,
+        file_id: &str,
+        obj_kind: ObjectKind,
+    ) -> TestResponse {
+        self.server
+            .get(&format!(
+                "/api/objects/{}/download?kind={}",
+                file_id, obj_kind
+            ))
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn stream(&self, d_token: &str, download: bool, range: Option<&str>) -> TestResponse {
+        let mut req = self.server.get(&format!(
+            "/api/objects/stream?token={}&download={}",
+            d_token, download,
+        ));
+        if let Some(range) = range {
+            req = req.add_header(RANGE, range);
+        }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_auth_header() {
-        let (key, value) = AppTest::auth_header("test_token_123");
-        assert_eq!(key, "Authorization");
-        assert_eq!(value, "Bearer test_token_123");
+        req.await
+    }
+    pub async fn list_objects(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/objects")
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn get_metadata(&self, jwt: &str, id: Uuid, obj_kind: &ObjectKind) -> TestResponse {
+        self.server
+            .get(&format!("/api/objects/{}?kind={}", id, obj_kind))
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn update_metadata(
+        &self,
+        jwt: &str,
+        id: Uuid,
+        cmetadata: &UpdateMetadata,
+    ) -> TestResponse {
+        self.server
+            .patch(&format!("/api/objects/{}", id))
+            .authorization_bearer(jwt)
+            .json(cmetadata)
+            .await
+    }
+    pub async fn list_children(&self, jwt: &str, f_id: Uuid) -> TestResponse {
+        self.server
+            .get(&format!("/api/objects/children/{}", f_id))
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn delete(&self, jwt: &str, body: &[DeleteRequest]) -> TestResponse {
+        self.server
+            .delete("/api/objects")
+            .authorization_bearer(jwt)
+            .json(body)
+            .await
+    }
+    pub async fn copy(&self, jwt: &str, body: &CopyRequest) -> TestResponse {
+        self.server
+            .post("/api/objects/copy")
+            .authorization_bearer(jwt)
+            .json(body)
+            .await
+    }
+    pub async fn move_obj(&self, jwt: &str, mvreq: MoveRequest) -> TestResponse {
+        self.server
+            .post("/api/objects/move")
+            .authorization_bearer(jwt)
+            .json(&mvreq)
+            .await
+    }
+    pub async fn get_user_profile(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/users/me")
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn update_username(&self, jwt: &str, new_name: &str) -> TestResponse {
+        self.server
+            .patch("/api/users/me")
+            .authorization_bearer(jwt)
+            .json(&json!({
+                "user_name" : new_name
+            }))
+            .await
+    }
+    pub async fn fetch_user_storage_info(&self, jwt: &str) -> TestResponse {
+        self.server
+            .get("/api/storage/usage")
+            .authorization_bearer(jwt)
+            .await
+    }
+    pub async fn shares(&self, jwt: &str, obj: &SharedObjectReq) -> TestResponse {
+        self.server
+            .post("/api/objects/shares")
+            .authorization_bearer(jwt)
+            .json(obj)
+            .await
+    }
+    pub async fn access_object(&self, token: &str, params: Option<AccessQuery>) -> TestResponse {
+        if let Some(params) = params {
+            return self
+                .server
+                .get(&format!("/api/shares/{token}"))
+                .add_query_param("f_id", params.f_id)
+                .add_query_param("kind", params.kind)
+                .await;
+        }
+        self.server.get(&format!("/api/shares/{token}")).await
     }
 }

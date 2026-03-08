@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use anyhow::anyhow;
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
@@ -144,13 +145,13 @@ pub fn deserialize_content<T: DeserializeOwned + Debug>(content: &str) -> Result
 pub fn extract_refresh_token(
     cookie_jar: &CookieJar,
     body: Option<Json<TokenPayload>>,
-) -> Result<SecretBox<String>, ApiError> {
+) -> Result<SecretString, ApiError> {
     debug!("Attempting to extract refresh token from cookie or body");
     let token = cookie_jar
         .get("token")
         .map(|cookie| {
             debug!("Token extracted from cookie");
-            SecretBox::new(Box::new(cookie.value().into()))
+            cookie.value().into()
         })
         .or_else(|| {
             body.map(|t| {
@@ -164,6 +165,47 @@ pub fn extract_refresh_token(
     token
 }
 //------------------------
-pub fn create_verification_key(token_type: TokenType, hashed_token: &str) -> String {
-    format!("{}:{}", token_type, hashed_token)
+/// the token maybe Uuid or CSRPNG hashed
+pub fn create_redis_key(token_type: TokenType, token: &str) -> String {
+    format!("{}:{}", token_type, token)
+}
+
+pub fn validate_display_name(name: &str) -> Result<(), ApiError> {
+    // 1. Length check
+    if name.is_empty() || name.len() > 255 {
+        return Err(ApiError::BadRequest(anyhow!(
+            "Name must be between 1 and 255 characters"
+        )));
+    }
+
+    // 2. Block "." and ".." only (leading dot is allowed for hidden files)
+    if name == "." || name == ".." {
+        return Err(ApiError::BadRequest(anyhow!("Name cannot be '.' or '..'")));
+    }
+
+    // 3.no trailing dot
+    if name.ends_with('.') {
+        return Err(ApiError::BadRequest(anyhow!("Name cannot end with a dot")));
+    }
+
+    // 4. Forbidden characters: path separators, null byte, control characters
+    for c in name.chars() {
+        match c {
+            '/' => return Err(ApiError::BadRequest(anyhow!("Name cannot contain '/'"))),
+            '\\' => return Err(ApiError::BadRequest(anyhow!("Name cannot contain '\\'"))),
+            '\0' => {
+                return Err(ApiError::BadRequest(anyhow!(
+                    "Name cannot contain null byte"
+                )));
+            }
+            c if (c as u32) < 0x20 => {
+                return Err(ApiError::BadRequest(anyhow!(
+                    "Name cannot contain control characters"
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }

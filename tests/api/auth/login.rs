@@ -23,7 +23,7 @@ use crate::{
 // ============================================================================
 
 async fn create_and_verify_test_account() -> anyhow::Result<(AppTest, TestAccount)> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(false).await?;
     let db_pool = family_cloud::get_db()?;
 
     let account = TestDatabase::create_verified_account(&db_pool).await?;
@@ -348,7 +348,7 @@ async fn test_login_with_very_long_email() -> anyhow::Result<()> {
 
 //#[tokio::test]
 async fn test_login_case_sensitive_password() -> anyhow::Result<()> {
-    let (app, _state) = setup_test_env().await?;
+    let (app, _state) = setup_test_env(false).await?;
     let db_pool = family_cloud::get_db()?;
 
     let account =

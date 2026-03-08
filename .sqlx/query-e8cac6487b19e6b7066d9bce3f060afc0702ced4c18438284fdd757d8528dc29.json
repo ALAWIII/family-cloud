@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE files SET status = 'active' WHERE id = $1 AND status = 'copying'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e8cac6487b19e6b7066d9bce3f060afc0702ced4c18438284fdd757d8528dc29"
+}

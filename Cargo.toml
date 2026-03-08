@@ -10,32 +10,31 @@ keywords = ["cloud", "media", "self-hosted", "family"]
 categories = ["multimedia", "web-programming"]
 
 [dependencies]
+#aws-smithy-types = { version = "1", features = ["rt-tokio"] }
 argon2 = { version = "0.5.3", features = ["std"] }
-askama = "0.15.1"
-aws-config = { version = "1.8.12", features = [
+askama = "0.15.4"
+aws-config = { version = "1.8.13", features = [
     "behavior-version-latest",
     "rustls",
 ] }
-aws-sdk-s3 = "1.119.0"
-axum = { version = "0.8.8", features = ["http2", "macros"] }
+aws-sdk-s3 = "1.122.0"
+axum = { version = "0.8.8", features = [
+    "http2",
+    "macros",
+    "multipart",
+    "tokio",
+] }
 axum-extra = { version = "0.12.5", features = ["cookie"] }
 base64 = "0.22.1"
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.43", features = ["serde"] }
 
-deadpool-redis = { version = "0.22", features = [
-    "tls-rustls",
-    "tokio-rustls-comp",
-    "tcp_nodelay",
-    "serde",
-    "keep-alive",
-    "connection-manager",
-] }
+deadpool-redis = { version = "0.22", features = ["tls-rustls", "tokio-rustls-comp", "tcp_nodelay", "serde", "keep-alive", "connection-manager", "script"] }
 
 dotenv = "0.15.0"
 fastrand = "2.3.0"
 hex = "0.4.3"
 hmac = { version = "0.12.1", features = ["std"] }
-jsonwebtoken = { version = "10.2.0", default-features = false, features = [
+jsonwebtoken = { version = "10.3.0", default-features = false, features = [
     "rust_crypto",
 ] }
 lettre = { version = "0.11.19", default-features = false, features = [
@@ -53,7 +52,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
-sha3 = "0.10.8"
+# sha3 = "0.10.8"
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio-rustls",
     "macros",
@@ -61,6 +60,7 @@ sqlx = { version = "0.8.6", default-features = false, features = [
     "uuid",
     "chrono",
     "migrate",
+    "json",
 ] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["full"] }
@@ -77,9 +77,30 @@ tracing-subscriber = { version = "0.3.22", features = [
 ] }
 tracing-bunyan-formatter = "0.3.10"
 tracing-log = "0.2.0"
-once_cell = "1.21.3"
 tracing-appender = "0.2.4"
+once_cell = "1.21.3"
 url = "2.5.8"
+tokio-util = { version = "0.7.18", features = ["io"] }
+async_zip = { version = "0.0.18", features = ["deflate", "tokio", "tokio-fs"] }
+futures = "0.3.31"
+path-security = "0.2.0"
+
+mime_guess = "2.0.5"
+# futures-util = "0.3.31"
+#http-body-util = { version = "0.1.3", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+aws-smithy-types-convert = { version = "0.60.12", features = [
+    "convert-chrono",
+] }
+path-clean = "1.0.1"
+derivative = "2.2.0"
+apalis = { version = "1.0.0-rc.4", features = ["timeout", "retry", "limit"] }
+apalis-postgres = "1.0.0-rc.3"
+apalis-core = "1.0.0-rc.4"
+num_cpus = "1.17.0"
+apalis-codec = "0.1.0-rc.4"
+regex = "1.12.2"
+
 [dev-dependencies]
 tower = "0.5.2"
 testcontainers = "0.26.3"
@@ -88,3 +109,4 @@ axum-test = "18.5.0"
 
 scraper = "0.25.0"
 regex = "1.12.2"
+zip = "8.0.0"

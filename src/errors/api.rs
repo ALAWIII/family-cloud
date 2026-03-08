@@ -20,19 +20,39 @@ pub enum ApiError {
     #[error(transparent)]
     Crypto(#[from] CryptoError),
 
+    #[error("rustfs error: {0}")]
+    RustFs(#[from] RustFSError),
+
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
     #[error(transparent)]
     Config(#[from] ConfigError),
     // -------- Domain --------
+    #[error("Corrupted or malformed byte stream: {0}")]
+    CorruptedByte(#[from] axum::Error),
+    //--------- rustfs -------------
     #[error("Conflict")]
     Conflict,
 
-    #[error("Bad request")]
-    BadRequest,
+    #[error("Bad request: {0}")]
+    BadRequest(#[from] anyhow::Error),
 
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("user exceeded the limit of concurrent downloads allowed.")]
+    TooManyDownloads,
+    #[error("requested object is not available.")]
+    NotFound,
+    #[error("object was already deleted.")]
+    AlreadyDeleted,
+    #[error("file wanted to be uploaded was to big to fit user available capacity.")]
+    ObjectTooLarge,
+    #[error("file upload corrupted because mismatch in checksum!")]
+    ChecksumMismatch,
+    #[error("unexpected job error : {0}")]
+    Job(#[from] JobError),
+    #[error("object access not allowed")]
+    Forbidden,
 }
 
 impl IntoResponse for ApiError {
@@ -43,11 +63,12 @@ impl IntoResponse for ApiError {
         let status = match self {
             // ---------- Database ----------
             ApiError::Database(db) => match db {
-                DatabaseError::NotFound => StatusCode::NOT_FOUND, // resource missing
-                DatabaseError::Duplicate => StatusCode::CONFLICT, // unique constraint
+                DatabaseError::NotFound(_) => StatusCode::NOT_FOUND, // resource missing
+                DatabaseError::Duplicate => StatusCode::CONFLICT,    // unique constraint
                 DatabaseError::PoolNotInitialized
                 | DatabaseError::PoolAlreadyInitialized
-                | DatabaseError::Connection(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
+                | DatabaseError::Connection(_)
+                | DatabaseError::DatabaseMigrate(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
             },
 
             // ---------- Redis ----------
@@ -79,11 +100,20 @@ impl IntoResponse for ApiError {
 
             // ---------- Serialization ----------
             ApiError::Serialization(_) | ApiError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
-
+            //---------------------
+            ApiError::RustFs(_) => StatusCode::INTERNAL_SERVER_ERROR,
             // ---------- Domain helpers ----------
             ApiError::Conflict => StatusCode::CONFLICT,
-            ApiError::BadRequest => StatusCode::BAD_REQUEST,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiError::TooManyDownloads => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::CorruptedByte(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::AlreadyDeleted => StatusCode::NO_CONTENT,
+            ApiError::ObjectTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ApiError::ChecksumMismatch => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::Job(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Forbidden => StatusCode::FORBIDDEN,
         };
 
         status.into_response()

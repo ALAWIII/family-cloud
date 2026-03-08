@@ -1,9 +1,10 @@
 use crate::{
-    ApiError, AppState, CryptoError, DatabaseError, EmailSender, PendingAccount, SignupRequest,
-    TokenPayload, User, create_verification_key, decode_token, delete_token_from_redis,
-    deserialize_content, encode_token, generate_token_bytes, get_redis_con, get_verification_data,
-    hash_password, hash_token, insert_new_account, is_account_exist, serialize_content,
-    store_token_redis, verification_body,
+    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, FolderRecord,
+    PendingAccount, SignupRequest, TokenPayload, User, create_redis_key, create_user_bucket,
+    decode_token, delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
+    generate_token_bytes, get_redis_con, hash_password, hash_token, insert_folder,
+    insert_new_account, insert_user_with_root_folder, is_account_exist, serialize_content,
+    store_token_redis, upsert_file, verification_body,
 };
 use axum::{
     Json, debug_handler,
@@ -12,6 +13,7 @@ use axum::{
 };
 use secrecy::ExposeSecret;
 use tracing::{info, instrument};
+use uuid::Uuid;
 
 /// if the email is new and not already used !
 fn create_pending_account(signup_info: &SignupRequest) -> Result<PendingAccount, CryptoError> {
@@ -44,7 +46,11 @@ pub(super) async fn signup(
     }
     //---------------------------------------------------------------
     let secret = appstate.settings.secrets.hmac.expose_secret();
-    let from_sender = appstate.settings.email.from_sender;
+    let from_sender = appstate
+        .settings
+        .email
+        .ok_or(EmailError::ClientNotInitialized)?
+        .from_sender;
     let app_url = appstate.settings.app.url();
     // if email is new
 
@@ -60,18 +66,18 @@ pub(super) async fn signup(
     let email_body = verification_body(
         &signup_info.username,
         &format!("{}/api/auth/signup?token={}", app_url, raw_token),
-        5,
+        appstate.settings.token_options.signup_token as u32,
         "family_cloud",
     );
     //---------------------------------
     info!("storing the new signup email verfication token to redis.");
-    let mut con = get_redis_con(appstate.redis_pool).await?;
+    let mut con = get_redis_con(&appstate.redis_pool).await?;
     let content = serialize_content(&pending_account)?;
     store_token_redis(
         &mut con,
-        &create_verification_key(crate::TokenType::Signup, &hashed_token),
+        &create_redis_key(crate::TokenType::Signup, &hashed_token),
         &content,
-        5 * 60,
+        appstate.settings.token_options.signup_token * 60,
     )
     .await?;
     //-------------------------
@@ -81,7 +87,11 @@ pub(super) async fn signup(
         .email_recipient(signup_info.email)
         .subject("new account email verification".to_string())
         .email_body(email_body)
-        .send_email(appstate.mail_client)
+        .send_email(
+            appstate
+                .mail_client
+                .ok_or(EmailError::ClientNotInitialized)?,
+        )
         .await?;
     info!("Signup request success.");
     Ok(StatusCode::OK)
@@ -99,25 +109,34 @@ pub async fn verify_signup(
     info!("decoding the signup verification token");
     let decoded = decode_token(token.token.expose_secret())?;
     let hashed_token = hash_token(&decoded, secret)?;
-    let key = create_verification_key(crate::TokenType::Signup, &hashed_token);
+    let key = create_redis_key(crate::TokenType::Signup, &hashed_token);
     //-------------------------- search redis for the token
 
     info!("searching redis for the signup verification token and retrieving its content.");
-    let mut redis_con = get_redis_con(appstate.redis_pool).await?;
-    let vdata = get_verification_data(&mut redis_con, &key)
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    let vdata = fetch_redis_data(&mut redis_con, &key)
         .await?
         .ok_or(ApiError::Unauthorized)?;
     let account: PendingAccount = deserialize_content(&vdata)?;
+    info!(
+        "initalizing new User account instance and storing it into Postgres database with it's root folder."
+    );
 
-    info!("initalizing new User account instance and storing it into Postgres database.");
-    let user = User::new(account.username, account.email, account.password_hash);
-    insert_new_account(user, &appstate.db_pool)
+    let user = User::new(
+        Uuid::new_v4(),
+        account.username,
+        account.email,
+        account.password_hash,
+    );
+    let folder = FolderRecord::new(user.id, None, "".into());
+    insert_user_with_root_folder(&user, &folder, &appstate.db_pool)
         .await
         .map_err(|e| match e {
             DatabaseError::Duplicate => ApiError::Conflict, // Edge case
             other => ApiError::Database(other),
         })?;
-
+    info!("creating user bucket in RustFS.");
+    create_user_bucket(&appstate.rustfs_con, &user.id.to_string()).await?;
     info!("deleting or invalidating the signup verification token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
     info!("successfully verifing new account signup.");
