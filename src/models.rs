@@ -158,6 +158,7 @@ pub enum TokenType {
     Refresh,
     Download,
     Access,
+    Shared,
 }
 impl Display for TokenType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -165,6 +166,7 @@ impl Display for TokenType {
             f,
             "{}",
             match self {
+                Self::Shared => "shared",
                 Self::EmailChange => "email_change",
                 Self::Signup => "signup",
                 Self::PasswordReset => "password_reset",
@@ -420,8 +422,8 @@ pub struct ObjDelete {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, FromRow)]
 pub struct FileRecord {
     pub id: Uuid,
-    pub owner_id: Uuid,
     pub parent_id: Uuid,
+    pub owner_id: Uuid,
     pub name: String,
     pub size: i64,
     pub etag: String,
@@ -507,11 +509,11 @@ impl IntoResponse for FileRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, FromRow)]
 pub struct FolderRecord {
     pub id: Uuid,
-    pub copying_children_count: i32,
-    pub owner_id: Uuid,
     pub parent_id: Option<Uuid>, // folder
     pub name: String,
     pub created_at: DateTime<Utc>,
+    pub owner_id: Uuid,
+    pub copying_children_count: i32,
     pub deleted_at: Option<DateTime<Utc>>,
     pub status: ObjectStatus,
     pub visibility: Visibility,
@@ -581,4 +583,59 @@ pub struct FolderChild {
     #[derivative(Hash, PartialEq)]
     pub id: Uuid,
     pub kind: ObjectKind,
+}
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct FolderShared {
+    pub id: Uuid,
+    pub parent_id: Option<Uuid>, // folder
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub children: sqlx::types::Json<Vec<FolderChild>>,
+}
+impl From<&FolderRecord> for FolderShared {
+    fn from(value: &FolderRecord) -> Self {
+        Self {
+            id: value.id,
+            parent_id: value.parent_id,
+            name: value.name.to_string(),
+            created_at: value.created_at,
+            children: vec![].into(),
+        }
+    }
+}
+impl IntoResponse for FolderShared {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct FileShared {
+    pub id: Uuid,
+    pub parent_id: Uuid,
+    pub name: String,
+    pub size: i64,
+    pub etag: String,
+    pub mime_type: String,
+    pub last_modified: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+impl From<&FileRecord> for FileShared {
+    fn from(value: &FileRecord) -> Self {
+        Self {
+            id: value.id,
+            parent_id: value.parent_id,
+            name: value.name.to_string(),
+            size: value.size,
+            mime_type: value.mime_type.to_string(),
+            created_at: value.created_at,
+            etag: value.etag.to_string(),
+            last_modified: value.last_modified,
+        }
+    }
+}
+impl IntoResponse for FileShared {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
 }
