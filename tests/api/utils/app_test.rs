@@ -3,7 +3,10 @@
 use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
-use family_cloud::{AppState, CopyRequest, DeleteRequest, MoveRequest, ObjectKind, UpdateMetadata};
+use family_cloud::{
+    AccessQuery, AppState, CopyRequest, DeleteRequest, MoveRequest, ObjectKind, SharedObjectReq,
+    UpdateMetadata,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -272,5 +275,23 @@ impl AppTest {
             .get("/api/storage/usage")
             .authorization_bearer(jwt)
             .await
+    }
+    pub async fn shares(&self, jwt: &str, obj: &SharedObjectReq) -> TestResponse {
+        self.server
+            .post("/api/objects/shares")
+            .authorization_bearer(jwt)
+            .json(obj)
+            .await
+    }
+    pub async fn access_object(&self, token: &str, params: Option<AccessQuery>) -> TestResponse {
+        if let Some(params) = params {
+            return self
+                .server
+                .get(&format!("/api/shares/{token}"))
+                .add_query_param("f_id", params.f_id)
+                .add_query_param("kind", params.kind)
+                .await;
+        }
+        self.server.get(&format!("/api/shares/{token}")).await
     }
 }
