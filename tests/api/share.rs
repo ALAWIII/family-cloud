@@ -1,11 +1,12 @@
-use std::collections::HashMap;
-
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use deadpool_redis::{Connection, redis::AsyncTypedCommands};
 use family_cloud::{
     AccessQuery, FileShared, FileSystemObject, FolderShared, ObjectKind, SharedObjectReq,
     SharedTokenResponse, create_redis_key, deserialize_content, get_redis_con,
 };
+use std::{collections::HashMap, io::Cursor, time::Duration};
 use uuid::Uuid;
+use zip::ZipArchive;
 
 use crate::{create_folders_files_tree, setup_with_authenticated_user};
 
@@ -402,5 +403,298 @@ async fn fetch_folder_not_son_of_shared_folder() -> anyhow::Result<()> {
         )
         .await;
     fetch_folder.assert_status_forbidden();
+    Ok(())
+}
+//------------------------------ test download file,folder,sub-file,sub-folder of shared token
+
+#[tokio::test]
+async fn download_root_file_using_shared_token() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let file = tree.files.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: file.id,
+                object_kind: ObjectKind::File,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app.stream_share(&token.token, true, None, None, None).await;
+    s.assert_status_success();
+    assert_eq!(
+        s.header(CONTENT_DISPOSITION).to_str().ok(),
+        Some(format!("attachment; filename=\"{}\"", file.name).as_ref())
+    );
+    let data = s.into_bytes();
+    assert_eq!(data.len() as i64, file.size);
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_root_folder_using_shared_token() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let folder = tree.folders.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: folder.id,
+                object_kind: ObjectKind::Folder,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app.stream_share(&token.token, true, None, None, None).await;
+    s.assert_status_success();
+    assert_eq!(
+        s.header(CONTENT_DISPOSITION).to_str().ok(),
+        Some(format!("attachment; filename=\"{}.zip\"", folder.name).as_ref())
+    );
+    let zip_bytes = s.into_bytes();
+    let zip = ZipArchive::new(Cursor::new(zip_bytes))?;
+    assert_eq!(zip.len(), 2);
+
+    Ok(())
+}
+#[tokio::test]
+async fn download_sub_folder_using_shared_token() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.folders.first().unwrap();
+    let child_folder = tree.folders.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::Folder,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_folder.id),
+            Some(ObjectKind::Folder),
+            None,
+        )
+        .await;
+    s.assert_status_success();
+    assert_eq!(
+        s.header(CONTENT_DISPOSITION).to_str().ok(),
+        Some(format!("attachment; filename=\"{}.zip\"", child_folder.name).as_ref())
+    );
+    let zip_bytes = s.into_bytes();
+    let zip = ZipArchive::new(Cursor::new(zip_bytes))?;
+    assert_eq!(zip.len(), 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_sub_file_using_shared_token() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.folders.first().unwrap();
+    let child_file = tree.files.first().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::Folder,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_file.id),
+            Some(ObjectKind::File),
+            None,
+        )
+        .await;
+    s.assert_status_success();
+    assert_eq!(
+        s.header(CONTENT_DISPOSITION).to_str().ok(),
+        Some(format!("attachment; filename=\"{}\"", child_file.name).as_ref())
+    );
+    let bytes = s.into_bytes();
+    assert_eq!(bytes.len() as i64, child_file.size);
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_file_not_within_token_scope() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.folders.last().unwrap();
+    let child_file = tree.files.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::Folder,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_file.id),
+            Some(ObjectKind::File),
+            None,
+        )
+        .await;
+    s.assert_status_forbidden();
+    Ok(())
+}
+#[tokio::test]
+async fn download_folder_not_within_token_scope() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.folders.last().unwrap();
+    let child_folder = tree.folders.first().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::Folder,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_folder.id),
+            Some(ObjectKind::Folder),
+            None,
+        )
+        .await;
+    s.assert_status_forbidden();
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_folder_of_root_file() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.files.last().unwrap();
+    let child_folder = tree.folders.first().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::File,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_folder.id),
+            Some(ObjectKind::Folder),
+            None,
+        )
+        .await;
+    s.assert_status_bad_request();
+    Ok(())
+}
+#[tokio::test]
+async fn download_file_of_root_file() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.files.last().unwrap();
+    let child_file = tree.files.first().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::File,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    let s = app
+        .stream_share(
+            &token.token,
+            true,
+            Some(child_file.id),
+            Some(ObjectKind::File),
+            None,
+        )
+        .await;
+    s.assert_status_bad_request();
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_file_expired_shared_token() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.files.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::File,
+                ttl: 1,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let resp = app.stream_share(&token.token, true, None, None, None).await;
+    resp.assert_status_unauthorized();
+    Ok(())
+}
+#[tokio::test]
+async fn download_file_partial_parameters() -> anyhow::Result<()> {
+    let (app, account, login_data) = setup_with_authenticated_user().await?;
+    let tree = create_folders_files_tree(&app, &account, &login_data.access_token).await?;
+    let root = tree.files.last().unwrap();
+    let token = app
+        .shares(
+            &login_data.access_token,
+            &SharedObjectReq {
+                f_id: root.id,
+                object_kind: ObjectKind::File,
+                ttl: 60,
+            },
+        )
+        .await
+        .json::<SharedTokenResponse>();
+
+    let resp = app
+        .stream_share(&token.token, true, None, Some(ObjectKind::File), None)
+        .await;
+    resp.assert_status_bad_request();
     Ok(())
 }

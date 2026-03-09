@@ -294,4 +294,27 @@ impl AppTest {
         }
         self.server.get(&format!("/api/shares/{token}")).await
     }
+    pub async fn stream_share(
+        &self,
+        s_token: &str,
+        download: bool,
+        child_id: Option<Uuid>,
+        child_kind: Option<ObjectKind>,
+        range: Option<&str>,
+    ) -> TestResponse {
+        let mut req = self.server.get(&format!(
+            "/api/objects/stream/share?token={}&download={}{}{}",
+            s_token,
+            download,
+            child_id.map(|c| format!("&f_id={c}")).unwrap_or("".into()),
+            child_kind
+                .map(|c| format!("&kind={c}"))
+                .unwrap_or("".into())
+        ));
+        if let Some(range) = range {
+            req = req.add_header(RANGE, range);
+        }
+
+        req.await
+    }
 }

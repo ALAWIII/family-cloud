@@ -70,7 +70,8 @@ pub async fn setup_test_env(mhog_cont: bool) -> anyhow::Result<(AppTest, family_
             secrets,
             redis: redis_config,
             token_options: TokenOptions {
-                max_concurrent_download: 10,
+                max_concurrent_unauth_stream: 50,
+                max_concurrent_auth_stream: 10,
                 download_token_ttl: 1440,
                 change_email_token: 10,
                 refresh_token: 43200,
