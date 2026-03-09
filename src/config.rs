@@ -95,7 +95,8 @@ pub struct RedisConfig {
 }
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct TokenOptions {
-    pub max_concurrent_download: u64,
+    pub max_concurrent_unauth_stream: u64,
+    pub max_concurrent_auth_stream: u64,
     pub password_reset_token: u64,
     pub download_token_ttl: u64,
     pub change_email_token: u64,

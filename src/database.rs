@@ -458,7 +458,8 @@ pub async fn fetch_all_file_ids_paths(
         .bind(folder_id) // $1
         .bind(owner_id) // $2
         .fetch_all(con)
-        .await?;
+        .await
+        .inspect_err(|e| error!("failed fetching all files: {e}"))?;
 
     Ok(files)
 }
@@ -696,6 +697,7 @@ where
         .bind(owner_id)
         .bind(grand_p_id)
         .fetch_optional(con)
-        .await?;
+        .await
+        .inspect_err(|e| error!("failed to execute validate child: {e}"))?;
     Ok(r)
 }
