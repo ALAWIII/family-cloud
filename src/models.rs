@@ -3,6 +3,8 @@ use axum::response::IntoResponse;
 use chrono::DateTime;
 use chrono::SubsecRound;
 use chrono::{NaiveDateTime, Utc};
+use deadpool_redis::redis;
+use deadpool_redis::redis::AsyncTypedCommands;
 use derivative::Derivative;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
@@ -12,6 +14,7 @@ use std::{fmt::Display, str::FromStr};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::CRedisError;
 use crate::{decrement_concurrent_download, get_redis_con};
 
 #[derive(Debug, Deserialize, Serialize, FromRow)]
@@ -375,18 +378,34 @@ pub struct StreamQuery {
 }
 
 #[derive(Debug, Clone)]
+pub enum CleanupStrategy {
+    Hash { token: String }, // HDEL user_key token
+    Counter,                // DECR ip_key
+}
+
+#[derive(Debug, Clone)]
 pub struct CleanupGuard {
     redis_pool: deadpool_redis::Pool,
-    token: Uuid,
     user_key: String,
+    strategy: CleanupStrategy,
 }
 
 impl CleanupGuard {
-    pub fn new(redis_pool: deadpool_redis::Pool, token: Uuid, user_key: String) -> Self {
+    pub fn hash(pool: deadpool_redis::Pool, token: Uuid, user_key: String) -> Self {
         Self {
-            redis_pool,
-            token,
+            redis_pool: pool,
             user_key,
+            strategy: CleanupStrategy::Hash {
+                token: token.to_string(),
+            },
+        }
+    }
+
+    pub fn counter(pool: deadpool_redis::Pool, ip_key: String) -> Self {
+        Self {
+            redis_pool: pool,
+            user_key: ip_key,
+            strategy: CleanupStrategy::Counter,
         }
     }
 }
@@ -394,16 +413,37 @@ impl CleanupGuard {
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         let pool = self.redis_pool.clone();
-        let token = self.token.to_string();
         let user_key = self.user_key.clone();
+        let strategy = self.strategy.clone();
 
-        // Spawn cleanup task (don't block Drop)
         tokio::spawn(async move {
             match get_redis_con(&pool).await {
                 Ok(mut con) => {
-                    match decrement_concurrent_download(&mut con, &token, &user_key).await {
+                    let result = match &strategy {
+                        CleanupStrategy::Hash { token } => con
+                            .hdel(&user_key, token)
+                            .await
+                            .map_err(CRedisError::Connection),
+                        CleanupStrategy::Counter => {
+                            // floor at 0 to avoid negative counts
+                            redis::Script::new(
+                                r#"
+                                local v = redis.call('GET', KEYS[1])
+                                if v and tonumber(v) > 0 then
+                                    redis.call('DECR', KEYS[1])
+                                end
+                                return 1
+                            "#,
+                            )
+                            .key(&user_key)
+                            .invoke_async(&mut con)
+                            .await
+                            .map_err(CRedisError::Connection)
+                        }
+                    };
+                    match result {
                         Err(e) => warn!(error = %e, "Failed to cleanup download token"),
-                        _ => info!(token = %token, "Download token cleaned up"),
+                        _ => info!(key = %user_key, "Download token cleaned up"),
                     }
                 }
                 Err(e) => error!(error = %e, "Failed to get redis connection for cleanup"),
@@ -411,6 +451,7 @@ impl Drop for CleanupGuard {
         });
     }
 }
+
 #[derive(Debug, Serialize, Deserialize, Derivative, Clone)]
 #[derivative(Hash, PartialEq, Eq)]
 pub struct ObjDelete {
@@ -620,6 +661,11 @@ pub struct FileShared {
     pub last_modified: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
+impl FileShared {
+    pub fn key(&self) -> String {
+        self.id.to_string()
+    }
+}
 impl From<&FileRecord> for FileShared {
     fn from(value: &FileRecord) -> Self {
         Self {
@@ -637,5 +683,38 @@ impl From<&FileRecord> for FileShared {
 impl IntoResponse for FileShared {
     fn into_response(self) -> axum::response::Response {
         Json(self).into_response()
+    }
+}
+pub struct FileStream {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub name: String,
+    pub size: i64,
+    pub etag: String,
+    pub mime_type: String,
+}
+
+impl FileStream {
+    pub fn from_file_shared(f_sh: FileShared, owner_id: Uuid) -> Self {
+        Self {
+            id: f_sh.id,
+            etag: f_sh.etag,
+            name: f_sh.name,
+            size: f_sh.size,
+            mime_type: f_sh.mime_type,
+            owner_id,
+        }
+    }
+}
+impl From<&FileRecord> for FileStream {
+    fn from(value: &FileRecord) -> Self {
+        Self {
+            id: value.id,
+            owner_id: value.owner_id,
+            name: value.name.to_string(),
+            size: value.size,
+            etag: value.etag.to_string(),
+            mime_type: value.mime_type.to_string(),
+        }
     }
 }
