@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
 
 use crate::{
-    ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, FileDownload, FileRecord,
-    FolderRecord, RustFSError, StreamQuery, TokenType, create_redis_key, deserialize_content,
-    fetch_all_file_ids_paths, fetch_redis_data, get_redis_con,
+    ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, FileDownload, FileShared,
+    FileStream, FileSystemObject, FolderShared, ObjectKind, RustFSError, StreamQuery, TokenType,
+    api::objects::{VALIDATE_FILE_QUERY, VALIDATE_FOLDER_QUERY},
+    create_redis_key, deserialize_content, fetch_all_file_ids_paths, fetch_redis_data,
+    get_redis_con, validate_object_ancestor,
 };
 
 use anyhow::anyhow;
@@ -15,7 +17,11 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use deadpool_redis::redis::{self, AsyncTypedCommands};
+use deadpool_redis::{
+    Connection,
+    redis::{self},
+};
+use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
@@ -23,9 +29,29 @@ use tracing::{debug, error, info, instrument};
 
 use regex::Regex;
 use std::sync::LazyLock;
+use uuid::Uuid;
 
 static RANGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^bytes=(\d+-\d*|-\d+)(,(\d+-\d*|-\d+))*$").unwrap());
+
+static CONCURRENT_DOWNLOAD_CHECK_HASH: &str = r#"
+        local count = redis.call('HLEN', KEYS[1])
+        if count >= tonumber(ARGV[1]) then
+            return 0
+        end
+        redis.call('HSET', KEYS[1], KEYS[2], 1)
+        redis.call('HEXPIRE', KEYS[1], ARGV[2], 'FIELDS', 1, KEYS[2])
+        return 1
+    "#;
+static CONCURRENT_DOWNLOAD_CHECK_COUNTER: &str = r#"
+        local count = redis.call('GET', KEYS[1])
+        if count and tonumber(count) >= tonumber(ARGV[1]) then
+            return 0
+        end
+        redis.call('INCR', KEYS[1])
+        redis.call('EXPIRE', KEYS[1], ARGV[2])
+        return 1
+    "#;
 fn parse_range(value: &str) -> anyhow::Result<&str> {
     if !RANGE_RE.is_match(value) {
         let e = anyhow!("failed to parse range: {}", value);
@@ -57,10 +83,10 @@ pub async fn stream(
     let raw_token = stream_info.token.to_string();
     let token_key = create_redis_key(TokenType::Download, &raw_token);
     info!("fetch redis information using the download token.");
-    let token_info = fetch_redis_data(&mut redis_con, &token_key)
+    let d_content: DownloadTokenData = fetch_redis_data(&mut redis_con, &token_key)
         .await?
-        .ok_or(ApiError::Unauthorized)?;
-    let d_content: DownloadTokenData = deserialize_content(&token_info)?;
+        .ok_or(ApiError::Unauthorized)
+        .and_then(|v| deserialize_content(&v))?;
 
     info!(
         f_id = %d_content.object_d.id(),
@@ -77,36 +103,26 @@ pub async fn stream(
     }
 
     //--------------------------- checking number of concurrent downloads
-    info!("getting the number of concurrent downloads user currently have.");
+    info!("incrementing the number of concurrent downloads for the user.");
+    let expire = appstate.settings.token_options.download_token_ttl * 60;
     let user_d_key = create_redis_key(TokenType::Download, &d_content.object_d.bucket_name()); // user_id = bucket_name
-    let active_count = redis_con
-        .hlen(&user_d_key)
-        .await
-        .map_err(CRedisError::Connection)? as u64;
-
-    if active_count >= appstate.settings.token_options.max_concurrent_download {
-        let e = ApiError::TooManyDownloads;
-        error!("{}", e);
-        return Err(e); // 429 status to many requests
+    let allowed = try_register_stream_token(
+        &mut redis_con,
+        &user_d_key,
+        Some(&raw_token),
+        appstate.settings.token_options.max_concurrent_auth_stream,
+        expire as i64,
+    )
+    .await
+    .inspect_err(|e| error!("stream check script failed: {e}"))?;
+    if !allowed {
+        error!("user exceeded the stream limit allowed!");
+        return Err(ApiError::TooManyDownloads);
     }
     //-------------------------- adding token to set of tokens
-    info!("incrementing the number of concurrent downloads for the user.");
-    let day = appstate.settings.token_options.download_token_ttl * 60;
-    let _: () = redis::pipe()
-        .atomic() // ensures all commands succeed or fail together
-        .hset_nx(&user_d_key, &raw_token, 1) // 2) Add token to user's hash only if it doesn't exist , download:user_id , fields:  token:1
-        .hexpire(
-            // 3) Set TTL on that hash field
-            &user_d_key,
-            day as i64,
-            redis::ExpireOption::NONE,
-            &[&raw_token],
-        )
-        .query_async(&mut redis_con)
-        .await
-        .map_err(CRedisError::Connection)?;
+
     info!("Creating cleanup guard");
-    let c_guard = CleanupGuard::new(appstate.redis_pool.clone(), stream_info.token, user_d_key);
+    let c_guard = CleanupGuard::hash(appstate.redis_pool.clone(), stream_info.token, user_d_key);
     //--------------------------------- streaming object -------------------
     let mut response = if d_content.object_d.is_folder() {
         // fetch all its name prefixes/postfixes .
@@ -118,7 +134,13 @@ pub async fn stream(
             fetch_all_file_ids_paths(&appstate.db_pool, folder.owner_id, folder.id)
                 .await
                 .inspect_err(|e| error!("{}", e))?;
-        stream_folder(appstate.rustfs_con.clone(), folder, files).await
+        stream_folder(
+            appstate.rustfs_con.clone(),
+            &folder.bucket_name(),
+            &folder.name,
+            files,
+        )
+        .await
     } else {
         //if Range header persists then use its value to resume download or stream.
         let range: Option<&str> = headers
@@ -129,7 +151,7 @@ pub async fn stream(
 
         stream_file(
             appstate.rustfs_con.clone(),
-            d_content.object_d.get_file().unwrap(),
+            FileStream::from(d_content.object_d.get_file().unwrap()),
             stream_info.download.unwrap_or(false),
             range,
         )
@@ -140,18 +162,157 @@ pub async fn stream(
     response.extensions_mut().insert(c_guard);
     Ok(response)
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StreamShareQuery {
+    pub token: Uuid,
+    pub f_id: Option<Uuid>,
+    pub kind: Option<ObjectKind>,
+    pub download: Option<bool>,
+}
+impl StreamShareQuery {
+    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
+        match (self.f_id, &self.kind) {
+            (Some(id), Some(k)) => Ok(Some((id, k.is_folder()))),
+            (None, None) => Ok(None),
+            _ => Err(ApiError::BadRequest(anyhow!(
+                "Partially provided parameters for stream share endpoint"
+            ))),
+        }
+    }
+}
+#[instrument(skip_all)]
+pub async fn stream_share(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(appstate): State<AppState>,
+    Query(stream_info): Query<StreamShareQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let params = stream_info.validate().inspect_err(|e| error!("{e}"))?;
+    info!("start new object streaming process.");
+    let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
+    let raw_token = stream_info.token.to_string();
+    let token_key = create_redis_key(TokenType::Shared, &raw_token);
+    info!("fetch redis information using the download token.");
+    let d_content: FileSystemObject = fetch_redis_data(&mut redis_con, &token_key)
+        .await?
+        .ok_or(ApiError::Unauthorized)
+        .and_then(|v| deserialize_content(&v))?;
 
+    info!(
+        f_id = %d_content.id(), user_id = d_content.bucket_name(),
+        user_ip = %addr.ip(), is_folder = d_content.is_folder(),
+        download_mode = stream_info.download.unwrap_or(false),
+        "Processing share stream request"
+    );
+    // --------------- check if d_content is file and params is Some then return error conflict (file cant have childs) !!!
+
+    if params.is_some() && !d_content.is_folder() {
+        // if the stored object with token is file , no matter what the other, should return bad request.
+        let e = ApiError::BadRequest(anyhow!(
+            "file can't have childs. user tries to bypass the token and download non-authorized objects.",
+        ));
+        error!("{e}");
+        return Err(e);
+    }
+
+    //--------------------------- checking number of concurrent downloads
+    info!("getting the number of concurrent downloads user currently have.");
+    let user_ip_key = create_redis_key(TokenType::Shared, &addr.ip().to_string()); // user_id = bucket_name
+    let allowed = try_register_stream_token(
+        &mut redis_con,
+        &user_ip_key,
+        None,
+        appstate.settings.token_options.max_concurrent_unauth_stream,
+        (appstate.settings.token_options.download_token_ttl * 60) as i64,
+    )
+    .await
+    .inspect_err(|e| error!("stream check script failed: {e}"))?;
+    if !allowed {
+        error!("user exceeded the stream limit allowed!");
+        return Err(ApiError::TooManyDownloads);
+    }
+    info!("Creating cleanup guard");
+    let c_guard = CleanupGuard::counter(appstate.redis_pool.clone(), user_ip_key);
+    let (target_id, is_folder) = params.unwrap_or((d_content.id(), d_content.is_folder()));
+    //--------------------------------- streaming object -------------------
+    let mut response = if is_folder {
+        let f_name = if target_id != d_content.id() {
+            validate_object_ancestor::<FolderShared>(
+                &appstate.db_pool,
+                d_content.owner_id(),
+                d_content.id(),
+                target_id,
+                VALIDATE_FOLDER_QUERY,
+            )
+            .await?
+            .ok_or(ApiError::Forbidden)
+            .inspect_err(|e| error!("accessing folder is unauthorized: {e}"))?
+            .name
+        } else {
+            d_content.name().to_string()
+        };
+
+        // fetch all its name prefixes/postfixes .
+        // loop over all those names and pipe them to a giant zip file.
+        // success ? Ok(())
+        info!("getting all file ids and their full paths to start streaming the whole folder.");
+        let files: Vec<FileDownload> =
+            fetch_all_file_ids_paths(&appstate.db_pool, d_content.owner_id(), target_id).await?;
+        stream_folder(
+            appstate.rustfs_con.clone(),
+            &d_content.bucket_name(),
+            &f_name,
+            files,
+        )
+        .await
+    } else {
+        let file = if target_id != d_content.id() {
+            let v: FileShared = validate_object_ancestor(
+                &appstate.db_pool,
+                d_content.owner_id(),
+                d_content.id(),
+                target_id,
+                VALIDATE_FILE_QUERY,
+            )
+            .await?
+            .ok_or(ApiError::Forbidden)
+            .inspect_err(|e| error!("accessing file is unauthorized: {e}"))?;
+            FileStream::from_file_shared(v, d_content.owner_id())
+        } else {
+            FileStream::from(d_content.get_file().unwrap())
+        }; // converts from &FileRecord
+
+        //if Range header persists then use its value to resume download or stream.
+        let range: Option<&str> = headers
+            .get(header::RANGE)
+            .and_then(|v| v.to_str().map(|v| v.trim()).ok())
+            .map(parse_range)
+            .transpose()?;
+
+        stream_file(
+            appstate.rustfs_con.clone(),
+            file,
+            stream_info.download.unwrap_or(false),
+            range,
+        )
+        .await
+    }
+    .inspect_err(|e| error!("{}", e))?;
+    info!("adding clean up guard as extension to continue working until the end of stream.");
+    response.extensions_mut().insert(c_guard);
+    Ok(response)
+}
 async fn stream_file(
     rustfs_con: Client,
-    file: &FileRecord,
+    file: FileStream,
     download: bool,
     range: Option<&str>,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the individual file.");
     let mut obj_req = rustfs_con // This is your Client
         .get_object()
-        .bucket(file.bucket_name()) // Bucket = User ID
-        .key(file.key()); // key = file_id
+        .bucket(file.owner_id.to_string()) // Bucket = User ID
+        .key(file.id.to_string()); // key = file_id
 
     if let Some(range) = range {
         debug!("setting incoming Range header value and direct it to RustFS.");
@@ -208,7 +369,8 @@ async fn stream_file(
 /// Responsible for compressing and streaming an entire folder.
 async fn stream_folder(
     rustfs_con: Client,
-    folder: &FolderRecord,
+    bucket: &str,
+    f_name: &str,
     files: Vec<FileDownload>,
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the compressed folder.");
@@ -219,7 +381,7 @@ async fn stream_folder(
     }
     debug!("allocating a new channel buffer with 1MB in size.");
     let (writer, reader) = tokio::io::duplex(1048576);
-    let bucket = folder.bucket_name();
+    let bucket = bucket.to_string();
     tokio::spawn(async move {
         debug!("start compressing arrived chunks of files from RustFS.");
         let e = create_zip(rustfs_con, bucket, files, writer)
@@ -237,11 +399,7 @@ async fn stream_folder(
         header::CONTENT_DISPOSITION,
         format!(
             "attachment; filename=\"{}.zip\"",
-            if folder.name.is_empty() {
-                "archive"
-            } else {
-                &folder.name
-            }
+            if f_name.is_empty() { "archive" } else { f_name }
         )
         .parse()
         .unwrap(),
@@ -298,4 +456,32 @@ async fn create_zip(
     zip.close().await?;
     debug!("success streaming all required files.");
     Ok(())
+}
+
+async fn try_register_stream_token(
+    rds_con: &mut Connection,
+    user_key: &str,
+    raw_token: Option<&str>,
+    limit: u64,
+    expire: i64,
+) -> Result<bool, CRedisError> {
+    let added: u8 = match raw_token {
+        Some(token) => redis::Script::new(CONCURRENT_DOWNLOAD_CHECK_HASH)
+            .key(user_key)
+            .key(token)
+            .arg(limit)
+            .arg(expire)
+            .invoke_async(rds_con)
+            .await
+            .map_err(CRedisError::Connection)?,
+        None => redis::Script::new(CONCURRENT_DOWNLOAD_CHECK_COUNTER)
+            .key(user_key)
+            .arg(limit)
+            .arg(expire)
+            .invoke_async(rds_con)
+            .await
+            .map_err(CRedisError::Connection)?,
+    };
+
+    Ok(added == 1)
 }

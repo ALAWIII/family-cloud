@@ -72,7 +72,7 @@ pub async fn download(
         .await
         .map_err(CRedisError::Connection)? as u64;
 
-    if active_count >= appstate.settings.token_options.max_concurrent_download {
+    if active_count >= appstate.settings.token_options.max_concurrent_auth_stream {
         return Err(ApiError::TooManyDownloads); // 429 status to many requests
     }
     //---------------------------

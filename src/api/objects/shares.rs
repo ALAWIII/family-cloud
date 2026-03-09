@@ -17,12 +17,12 @@ use uuid::Uuid;
 
 use crate::{
     ApiError, AppState, CRedisError, Claims, FileShared, FileSystemObject, FolderShared,
-    ObjectKind, TokenType, create_redis_key, deserialize_content, fetch_file_info,
-    fetch_folder_info, get_redis_con, serialize_content, validate_object_ancestor,
+    ObjectKind, TokenType,
+    api::objects::{VALIDATE_FILE_QUERY, VALIDATE_FOLDER_QUERY},
+    create_redis_key, deserialize_content, fetch_file_info, fetch_folder_info, get_redis_con,
+    serialize_content, validate_object_ancestor,
 };
-static VALIDATE_FILE_QUERY: &str = include_str!("../../../db_queries/validate_file_ancestor.sql");
-static VALIDATE_FOLDER_QUERY: &str =
-    include_str!("../../../db_queries/validate_folder_ancestor.sql");
+
 //------------------------------------share objects links ----------------------------
 static CHECK_AND_SET: &str = r#"
 local token = redis.call('HGET', KEYS[1], KEYS[2])

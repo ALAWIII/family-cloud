@@ -21,7 +21,9 @@ pub use copy::*;
 pub use move_obj::*;
 mod shares;
 pub use shares::*;
-
+static VALIDATE_FILE_QUERY: &str = include_str!("../../../db_queries/validate_file_ancestor.sql");
+static VALIDATE_FOLDER_QUERY: &str =
+    include_str!("../../../db_queries/validate_folder_ancestor.sql");
 //--------------------------------------objects manipulation ----------------------
 pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
     Router::new()
@@ -40,4 +42,5 @@ pub fn storage_objects(hmac: SecretString) -> Router<AppState> {
         .route("/api/objects/shares", post(create_link_share))
         .layer(from_fn_with_state(hmac, validate_jwt_access_token))
         .route("/api/objects/stream", get(stream)) // no need for accepting jwt access token.
+        .route("/api/objects/stream/share", get(stream_share))
 }
