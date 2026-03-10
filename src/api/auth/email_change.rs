@@ -11,8 +11,8 @@ use crate::{
     ApiError, AppState, Claims, DatabaseError, EmailError, EmailInput, EmailSender, TokenPayload,
     UserVerification, create_redis_key, decode_token, delete_token_from_redis, deserialize_content,
     email_cancel_body, email_change_body, encode_token, fetch_email_by_id, fetch_redis_data,
-    generate_token_bytes, get_redis_con, hash_token, is_account_exist, is_token_exist,
-    serialize_content, store_token_redis, update_account_email,
+    generate_token_bytes, get_redis_con, hash_token, is_account_exist, serialize_content,
+    store_token_redis, update_account_email,
 };
 
 #[debug_handler]
@@ -69,24 +69,7 @@ pub async fn change_email(
         appstate.settings.token_options.change_email_token * 60,
     )
     .await?;
-    //-------------------------------- sending email change verification to the new email ---------
-    info!("sending email verification message to the new email address.");
-    let verify_change_email_link = format!(
-        "{}/api/auth/change-email/verify?token={}",
-        app_url, raw_token
-    );
-    EmailSender::default()
-        .from_sender(from_sender.clone())
-        .email_recipient(email_info.email)
-        .subject("Change Email Request".into())
-        .email_body(email_change_body(
-            &claims.username,
-            &verify_change_email_link,
-            appstate.settings.token_options.change_email_token as u32,
-            "Family Cloud",
-        ))
-        .send_email(mail_client.clone())
-        .await?;
+
     //----------------------------send cancel email for the old email-----------------
     info!("sending cancel email message to the old email address.");
     let cancel_change_email_link = format!(
@@ -94,12 +77,30 @@ pub async fn change_email(
         app_url, raw_token
     );
     EmailSender::default()
-        .from_sender(from_sender)
+        .from_sender(from_sender.clone())
         .email_recipient(old_email)
         .subject("Cancel Changing Email Request".into())
         .email_body(email_cancel_body(
             &claims.username,
             &cancel_change_email_link,
+            appstate.settings.token_options.change_email_token as u32,
+            "Family Cloud",
+        ))
+        .send_email(mail_client.clone())
+        .await?;
+    //-------------------------------- sending email change verification to the new email ---------
+    info!("sending email verification message to the new email address.");
+    let verify_change_email_link = format!(
+        "{}/api/auth/change-email/verify?token={}",
+        app_url, raw_token
+    );
+    EmailSender::default()
+        .from_sender(from_sender)
+        .email_recipient(email_info.email)
+        .subject("Change Email Request".into())
+        .email_body(email_change_body(
+            &claims.username,
+            &verify_change_email_link,
             appstate.settings.token_options.change_email_token as u32,
             "Family Cloud",
         ))
@@ -159,17 +160,15 @@ pub async fn cancel_change_email(
     let hashed_token = hash_token(&token_bytes, secret)?;
     let key = create_redis_key(crate::TokenType::EmailChange, &hashed_token);
 
-    info!("asking if the change email cancel token still valid in redis.");
+    info!("deleting token from redis");
     let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
-    let t = is_token_exist(&mut redis_con, &key).await?;
-    if !t {
+    let deleted = delete_token_from_redis(&mut redis_con, &key).await?;
+    if deleted == 0 {
         error!("invalid cancel token.");
         return Err(ApiError::BadRequest(anyhow::anyhow!(
             "invalid cancel token"
         )));
     }
-    info!("deleting token from redis");
-    delete_token_from_redis(&mut redis_con, &key).await?;
     info!("cancel change email successfully");
     Ok(StatusCode::OK)
 }
