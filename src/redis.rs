@@ -86,13 +86,14 @@ pub async fn fetch_redis_data(
 pub async fn delete_token_from_redis(
     con: &mut Connection,
     hashed_token: &str,
-) -> Result<(), CRedisError> {
+) -> Result<usize, CRedisError> {
     debug!("Deleting token from Redis");
-    con.del(hashed_token)
+    let count = con
+        .del(hashed_token)
         .await
         .inspect_err(|e| error!("Failed to delete token from Redis: {}", e))?;
 
-    Ok(())
+    Ok(count)
 }
 
 /// on success,failure or user disconnection always delete the token from the hset , so that decrementing the counter of allowed concurrent user.
