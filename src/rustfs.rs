@@ -50,7 +50,16 @@ pub async fn create_user_bucket(rfs_con: &Client, user_id: &str) -> Result<(), R
         .inspect_err(|e| error!("{}", e))?;
     Ok(())
 }
-
+pub async fn delete_user_bucket(rfs_con: &Client, user_id: &str) -> Result<(), RustFSError> {
+    rfs_con
+        .delete_bucket()
+        .bucket(user_id)
+        .send()
+        .await
+        .map_err(|e| RustFSError::BucketCreate(e.into()))
+        .inspect_err(|e| error!("{}", e))?;
+    Ok(())
+}
 pub async fn fetch_object_metadata(
     rfs_con: &Client,
     file: &FileRecord,
