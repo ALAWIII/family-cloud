@@ -4,12 +4,14 @@ use axum::{Router, http::header::RANGE};
 use axum_extra::extract::cookie::Cookie;
 use axum_test::{TestRequest, TestResponse, TestServer};
 use family_cloud::{
-    AccessQuery, AppState, CopyRequest, DeleteRequest, MoveRequest, ObjectKind, SharedObjectReq,
-    UpdateMetadata,
+    AccessQuery, AppState, CopyRequest, DeleteRequest, LoginResponse, MoveRequest, ObjectKind,
+    SharedObjectReq, UpdateMetadata,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+use crate::create_token_pair;
 
 use super::MailHogClient;
 
@@ -316,5 +318,13 @@ impl AppTest {
         }
 
         req.await
+    }
+    pub async fn delete_user_account(&self, credits: &LoginResponse) -> TestResponse {
+        let ref_token = create_token_pair(&credits.refresh_token);
+        self.server
+            .delete("/api/users/me")
+            .authorization_bearer(&credits.access_token)
+            .add_cookie(ref_token.0)
+            .await
     }
 }
