@@ -1,18 +1,19 @@
 use crate::{
-    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, FolderRecord,
-    PendingAccount, SignupRequest, TokenPayload, User, create_redis_key, create_user_bucket,
-    decode_token, delete_token_from_redis, deserialize_content, encode_token, fetch_redis_data,
-    generate_token_bytes, get_redis_con, hash_password, hash_token, insert_folder,
-    insert_new_account, insert_user_with_root_folder, is_account_exist, serialize_content,
-    store_token_redis, upsert_file, verification_body,
+    ApiError, AppState, CloudCommand, CommandBus, CryptoError, DatabaseError, EmailError,
+    EmailSender, FolderRecord, PendingAccount, SignupRequest, TokenPayload, User, create_redis_key,
+    create_user_bucket, decode_token, delete_account, delete_token_from_redis, deserialize_content,
+    encode_token, fetch_redis_data, generate_token_bytes, get_redis_con, hash_password, hash_token,
+    insert_user_with_root_folder, is_account_exist, serialize_content, store_token_redis,
+    verification_body,
 };
+
 use axum::{
     Json, debug_handler,
     extract::{Query, State},
     http::status::StatusCode,
 };
 use secrecy::ExposeSecret;
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 use uuid::Uuid;
 
 /// if the email is new and not already used !
@@ -128,15 +129,55 @@ pub async fn verify_signup(
         account.email,
         account.password_hash,
     );
-    let folder = FolderRecord::new(user.id, None, "".into());
-    insert_user_with_root_folder(&user, &folder, &appstate.db_pool)
-        .await
-        .map_err(|e| match e {
-            DatabaseError::Duplicate => ApiError::Conflict, // Edge case
-            other => ApiError::Database(other),
-        })?;
-    info!("creating user bucket in RustFS.");
-    create_user_bucket(&appstate.rustfs_con, &user.id.to_string()).await?;
+    let user_id = user.id;
+    info!("starting new atomic transaction.");
+    let mut bus_commands = CommandBus::default();
+    debug!("creating the inserting account command.");
+    let in_user = {
+        let pool = appstate.db_pool.clone();
+        move || {
+            let pool = pool.clone();
+            let user = user.clone();
+            async move {
+                info!("creating root folder and inserting it with new user.");
+                let folder = FolderRecord::new(user.id, None, "".into());
+                insert_user_with_root_folder(&user, &folder, &pool)
+                    .await
+                    .map_err(|e| match e {
+                        DatabaseError::Duplicate => ApiError::Conflict,
+                        other => ApiError::Database(other),
+                    })
+            }
+        }
+    };
+    let c_user_b = {
+        move || {
+            let rfs_con = appstate.rustfs_con.clone();
+            async move {
+                info!("creating user bucket in RustFS.");
+                create_user_bucket(&rfs_con, &user_id.to_string())
+                    .await
+                    .map_err(ApiError::RustFs)
+            }
+        }
+    };
+    let d_account = {
+        move || {
+            let db_con = appstate.db_pool.clone();
+            async move {
+                info!(id = %user_id, "rollback deleting account.");
+                delete_account(&db_con, user_id)
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into) // convert to anyhow::Error
+            }
+        }
+    };
+    debug!("adding signup commands.");
+    bus_commands.add_command(CloudCommand::from_fns(in_user, d_account));
+    bus_commands.add_command(CloudCommand::from_fns(c_user_b, || async { Ok(()) })); // if this fail it will rollback and invoke d_account by iterating from index=0;
+    info!("executing transaction");
+    bus_commands.execute().await?;
     info!("deleting or invalidating the signup verification token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
     info!("successfully verifing new account signup.");
