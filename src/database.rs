@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use crate::{
-    CopyJobRecord, DatabaseConfig, DatabaseError, DeleteJobRecord, FileDownload, FileRecord,
-    FolderChild, FolderRecord, ObjectStatus, UpdateMetadata, User, UserProfile, UserStorageInfo,
+    CopyJobRecord, DatabaseConfig, DatabaseError, FileDownload, FileId, FileRecord, FolderChild,
+    FolderRecord, ObjectStatus, UpdateMetadata, User, UserProfile, UserStorageInfo,
 };
 use anyhow::anyhow;
 use sqlx::{
@@ -13,7 +13,7 @@ use tracing::{Level, debug, error, instrument};
 use uuid::Uuid;
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
-
+static DELETE_ACCOUNT_QUERY: &str = include_str!("../db_queries/delete_account.sql");
 #[instrument(skip_all,ret(level=Level::DEBUG),fields(
     init_id=%Uuid::new_v4(),
     db_name=db.db_name,
@@ -187,17 +187,13 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>,
             .inspect_err(|e| error!("database error when searching for id by email : {}", e))?,
     )
 }
-pub async fn delete_account(con: &PgPool, user_id: Uuid) -> Result<u64, DatabaseError> {
-    let res = sqlx::query!(
-        r#"
-        DELETE FROM users WHERE id=$1
-        "#,
-        user_id
-    )
-    .execute(con)
-    .await
-    .inspect_err(|e| error!("failed to delete user account: {e}"))?;
-    Ok(res.rows_affected())
+pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<FileId>, DatabaseError> {
+    let res = sqlx::query_as::<_, FileId>(DELETE_ACCOUNT_QUERY)
+        .bind(user_id)
+        .fetch_all(con)
+        .await
+        .inspect_err(|e| error!("{e}"))?;
+    Ok(res)
 }
 pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, DatabaseError> {
     debug!(user_id=%id,"fetching email by user id.");
@@ -532,7 +528,7 @@ pub async fn delete_folders(
     con: &PgPool,
     owner_id: Uuid,
     folders: &[Uuid],
-) -> Result<Option<Vec<DeleteJobRecord>>, DatabaseError> {
+) -> Result<Option<Vec<FileId>>, DatabaseError> {
     if folders.is_empty() {
         return Ok(Some(vec![]));
     }
@@ -543,7 +539,7 @@ pub async fn delete_folders(
 
     let query = include_str!("../db_queries/delete_folders.sql");
 
-    let files_id: Vec<DeleteJobRecord> = sqlx::query_as::<_, DeleteJobRecord>(query)
+    let files_id: Vec<FileId> = sqlx::query_as::<_, FileId>(query)
         .bind(folders)
         .bind(owner_id)
         .fetch_all(&mut *tx)
@@ -563,7 +559,7 @@ pub async fn delete_files(
     con: &PgPool,
     owner_id: Uuid,
     files: &[Uuid],
-) -> Result<Vec<DeleteJobRecord>, DatabaseError> {
+) -> Result<Vec<FileId>, DatabaseError> {
     if files.is_empty() {
         return Ok(vec![]);
     }
@@ -574,7 +570,7 @@ pub async fn delete_files(
 
     let query = include_str!("../db_queries/delete_files.sql");
 
-    let files_id: Vec<DeleteJobRecord> = sqlx::query_as::<_, DeleteJobRecord>(query)
+    let files_id: Vec<FileId> = sqlx::query_as::<_, FileId>(query)
         .bind(files)
         .bind(owner_id)
         .fetch_all(&mut *tx)
