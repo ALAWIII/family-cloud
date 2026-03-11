@@ -1,4 +1,4 @@
-use crate::{JobError, finalize_copy};
+use crate::{JobError, delete_user_bucket, finalize_copy};
 use anyhow::anyhow;
 use apalis::{
     layers::retry::{
@@ -7,7 +7,10 @@ use apalis::{
     },
     prelude::*,
 };
-use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+use aws_sdk_s3::{
+    error::ProvideErrorMetadata,
+    types::{CompletedMultipartUpload, CompletedPart},
+};
 use std::{sync::OnceLock, time::Duration};
 
 use apalis::layers::retry::HasherRng;
@@ -98,13 +101,13 @@ pub async fn init_apalis(con: &PgPool, rfs: Client, w_names: WorkersName) -> Res
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeleteJob {
-    pub record: DeleteJobRecord,
+    pub f_id: FileId,
     pub bucket: Uuid,
+    pub account_deletion: bool,
 }
-#[derive(Debug, Deserialize, Serialize, Clone, FromRow)]
-pub struct DeleteJobRecord {
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, FromRow)]
+pub struct FileId {
     pub id: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CopyJob {
@@ -132,20 +135,34 @@ async fn delete_file_rustfs(
     ctx: WorkerContext,
     jobstate: Data<JobState>,
 ) -> Result<(), BoxDynError> {
-    debug!(worker_ready = ctx.is_ready(),file_id=?job.record.id,bucket=%job.bucket, "proccessing new delete job.");
+    debug!(worker_ready = ctx.is_ready(),file_id=?job.f_id.id,bucket=%job.bucket, "proccessing new delete job.");
     let bucket = job.bucket.to_string();
-    let key = job.record.id.unwrap().to_string();
+    let key = job.f_id.id.unwrap().to_string();
 
     debug!("sending delete request to RustFS.");
     // No need to check existence first — delete_object is idempotent
-    jobstate
+    let d_resp=jobstate
         .rfs_client
         .delete_object()
         .bucket(&bucket)
         .key(&key)
         .send()
         .await.inspect_err(|e|
-            error!(f_id=?job.record.id,user_id=%job.bucket, "failed to delete from RustFS: {}", e))?; // only fails on transient errors → apalis retries
+            error!(f_id=?job.f_id.id,user_id=%job.bucket, "failed to delete from RustFS: {}", e)); // only fails on transient errors → apalis retries
+    if let Err(e) = d_resp
+        && ![Some("NoSuchKey"), Some("NoSuchBucket")].contains(&e.code())
+    {
+        return Err(e.into());
+    }
+
+    if job.account_deletion {
+        let delete_result = delete_user_bucket(&jobstate.rfs_client, job.bucket).await;
+        if let Err(e) = delete_result
+            && ![Some("BucketNotEmpty"), Some("NoSuchBucket")].contains(&e.code())
+        {
+            return Err(e.into());
+        }
+    }
     debug!("deleting file success.");
     Ok(())
 }
@@ -178,7 +195,7 @@ async fn copy_file_rustfs(
         Ok(_) => {} // exists, proceed
         Err(e) if e.as_service_error().is_some_and(|v| v.is_not_found()) => {
             // permanent — file genuinely doesn't exist
-            tracing::warn!(file_id = %job.record.source_file_id, "source file not found, skipping");
+            tracing::warn!(file_id = %job.record.source_file_id, "source file/bucket not found, skipping");
             return Ok(());
         }
         Err(e) => {
