@@ -1,10 +1,10 @@
 use crate::{
     ApiError, AppState, CloudCommand, CommandBus, CryptoError, DatabaseError, EmailError,
     EmailSender, FolderRecord, PendingAccount, SignupRequest, TokenPayload, User, create_redis_key,
-    create_user_bucket, decode_token, delete_account, delete_token_from_redis, deserialize_content,
-    encode_token, fetch_redis_data, generate_token_bytes, get_redis_con, hash_password, hash_token,
-    insert_user_with_root_folder, is_account_exist, serialize_content, store_token_redis,
-    verification_body,
+    create_user_bucket, decode_token, delete_account_db, delete_token_from_redis,
+    deserialize_content, encode_token, fetch_redis_data, generate_token_bytes, get_redis_con,
+    hash_password, hash_token, insert_user_with_root_folder, is_account_exist, serialize_content,
+    store_token_redis, verification_body,
 };
 
 use axum::{
@@ -166,7 +166,7 @@ pub async fn verify_signup(
             let db_con = appstate.db_pool.clone();
             async move {
                 info!(id = %user_id, "rollback deleting account.");
-                delete_account(&db_con, user_id)
+                delete_account_db(&db_con, user_id)
                     .await
                     .map(|_| ())
                     .map_err(Into::into) // convert to anyhow::Error
