@@ -7,6 +7,7 @@ use argon2::{
 };
 use axum::Json;
 use axum_extra::extract::CookieJar;
+use deadpool_redis::Connection;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 
@@ -18,7 +19,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use tracing::{debug, error, info, warn};
 
-use crate::{ApiError, Claims, CryptoError, TokenPayload, TokenType, UserTokenPayload};
+use crate::{
+    ApiError, Claims, CryptoError, TokenPayload, TokenType, UserTokenPayload,
+    delete_token_from_redis,
+};
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
@@ -207,5 +211,21 @@ pub fn validate_display_name(name: &str) -> Result<(), ApiError> {
         }
     }
 
+    Ok(())
+}
+//-----------------------
+
+pub async fn revoke_refresh_token(
+    hmac_sec: &str,
+    refresh_token: &str,
+    redis_con: &mut Connection,
+) -> Result<(), ApiError> {
+    info!("decoding and hashing the refresh token for logout");
+    let token_bytes = decode_token(refresh_token)?;
+    let token_hash = hash_token(&token_bytes, hmac_sec)?;
+    let key = create_redis_key(crate::TokenType::Refresh, &token_hash);
+
+    info!("deleting and invalidating the refresh token from redis.");
+    delete_token_from_redis(redis_con, &key).await?; // already deleted
     Ok(())
 }
