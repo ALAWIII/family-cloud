@@ -187,7 +187,18 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>,
             .inspect_err(|e| error!("database error when searching for id by email : {}", e))?,
     )
 }
-
+pub async fn delete_account(con: &PgPool, user_id: Uuid) -> Result<u64, DatabaseError> {
+    let res = sqlx::query!(
+        r#"
+        DELETE FROM users WHERE id=$1
+        "#,
+        user_id
+    )
+    .execute(con)
+    .await
+    .inspect_err(|e| error!("failed to delete user account: {e}"))?;
+    Ok(res.rows_affected())
+}
 pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, DatabaseError> {
     debug!(user_id=%id,"fetching email by user id.");
     Ok(
