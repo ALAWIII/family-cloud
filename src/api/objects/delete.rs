@@ -54,9 +54,10 @@ pub async fn delete(
         (Ok(Err(f_e1)), Err(_)) => return Err(f_e1.into()),
         (Ok(Ok(list)), Err(_)) | (Ok(Err(_)), Ok(list)) | (Err(_), Ok(list)) => list
             .into_iter()
-            .map(|v| DeleteJob {
-                record: v,
+            .map(|id| DeleteJob {
+                f_id: id,
                 bucket: claims.sub,
+                account_deletion: false,
             })
             .collect(),
         (Ok(Ok(mut list1)), Ok(list2)) => {
@@ -64,9 +65,10 @@ pub async fn delete(
             list1.extend(list2);
             list1
                 .into_iter()
-                .map(|v| DeleteJob {
-                    record: v,
+                .map(|id| DeleteJob {
+                    f_id: id,
                     bucket: claims.sub,
+                    account_deletion: false,
                 })
                 .collect()
         }
