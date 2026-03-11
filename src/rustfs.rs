@@ -1,7 +1,11 @@
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region},
-    operation::head_object::HeadObjectOutput,
+    error::SdkError,
+    operation::{
+        delete_bucket::{DeleteBucketError, DeleteBucketOutput},
+        head_object::HeadObjectOutput,
+    },
 };
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::OnceLock;
@@ -50,15 +54,16 @@ pub async fn create_user_bucket(rfs_con: &Client, user_id: &str) -> Result<(), R
         .inspect_err(|e| error!("{}", e))?;
     Ok(())
 }
-pub async fn delete_user_bucket(rfs_con: &Client, user_id: &str) -> Result<(), RustFSError> {
+pub async fn delete_user_bucket(
+    rfs_con: &Client,
+    user_id: Uuid,
+) -> Result<DeleteBucketOutput, SdkError<DeleteBucketError>> {
     rfs_con
         .delete_bucket()
-        .bucket(user_id)
+        .bucket(user_id.to_string())
         .send()
         .await
-        .map_err(|e| RustFSError::BucketCreate(e.into()))
-        .inspect_err(|e| error!("{}", e))?;
-    Ok(())
+        .inspect_err(|e| error!("{}", e))
 }
 pub async fn fetch_object_metadata(
     rfs_con: &Client,
