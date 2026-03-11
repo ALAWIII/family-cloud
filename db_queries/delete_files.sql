@@ -15,4 +15,4 @@ total_size AS (
 decrement_size AS (
     UPDATE users SET storage_used_bytes= GREATEST(storage_used_bytes-(SELECT ts FROM total_size),0) WHERE id=$2
 )
-SELECT id, parent_id FROM updated_files;
+SELECT id FROM updated_files;

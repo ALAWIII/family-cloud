@@ -73,15 +73,15 @@ updated_folders AS (
 -- 1. blocked=true  → returns a single NULL row   → app returns 409
 -- 2. blocked=false, no files → returns no rows   → app returns Some(vec![])
 -- 3. blocked=false, has files → returns file IDs → app dispatches delete jobs
-SELECT id, parent_id FROM (
-    SELECT id, parent_id
+SELECT id FROM (
+    SELECT id
     FROM updated_files
 
     UNION ALL
 
     -- Sentinel NULL row injected only when blocked,
     -- allowing the app to distinguish "no jobs" from "operation rejected".
-    SELECT NULL::uuid AS id, NULL::uuid AS parent_id
+    SELECT NULL::uuid AS id
     WHERE (SELECT blocked FROM guard)
 
 ) AS result;
