@@ -1,3 +1,6 @@
+use crate::ApiError;
+use crate::CRedisError;
+use crate::get_redis_con;
 use axum::Json;
 use axum::response::IntoResponse;
 use chrono::DateTime;
@@ -10,14 +13,12 @@ use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::prelude::FromRow;
+use std::pin::Pin;
 use std::{fmt::Display, str::FromStr};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::CRedisError;
-use crate::{decrement_concurrent_download, get_redis_con};
-
-#[derive(Debug, Deserialize, Serialize, FromRow)]
+#[derive(Debug, Deserialize, Serialize, FromRow, Clone)]
 pub struct User {
     pub id: Uuid,
     pub root_folder: Option<Uuid>,
@@ -715,6 +716,53 @@ impl From<&FileRecord> for FileStream {
             size: value.size,
             etag: value.etag.to_string(),
             mime_type: value.mime_type.to_string(),
+        }
+    }
+}
+
+pub type CommandAsyncFnDyn<E> =
+    Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>> + Send + Sync>; //O = Result<(),BoxDynError>
+pub struct CloudCommand {
+    pub execute: CommandAsyncFnDyn<ApiError>,
+    pub rollback: CommandAsyncFnDyn<anyhow::Error>,
+}
+impl CloudCommand {
+    pub fn from_fns<E, R, Fut1, Fut2>(execute: E, rollback: R) -> Self
+    where
+        E: Fn() -> Fut1 + Send + Sync + 'static,
+        R: Fn() -> Fut2 + Send + Sync + 'static,
+        Fut1: Future<Output = Result<(), ApiError>> + Send + 'static,
+        Fut2: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
+    {
+        Self {
+            execute: Box::new(move || Box::pin(execute())),
+            rollback: Box::new(move || Box::pin(rollback())),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CommandBus {
+    commands: Vec<CloudCommand>,
+}
+impl CommandBus {
+    pub fn add_command(&mut self, c: CloudCommand) {
+        self.commands.push(c);
+    }
+    pub async fn execute(&self) -> Result<(), ApiError> {
+        for (i, c) in self.commands.iter().enumerate() {
+            if let Err(e) = (c.execute)().await {
+                self.rollback(i).await;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    async fn rollback(&self, idx: usize) {
+        for i in (0..idx).rev() {
+            if let Err(e) = (self.commands[i].rollback)().await {
+                error!("rollback failed at index {i}: {e}");
+            }
         }
     }
 }
