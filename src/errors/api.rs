@@ -64,11 +64,12 @@ impl IntoResponse for ApiError {
             // ---------- Database ----------
             ApiError::Database(db) => match db {
                 DatabaseError::NotFound(_) => StatusCode::NOT_FOUND, // resource missing
-                DatabaseError::Duplicate => StatusCode::CONFLICT,    // unique constraint
+                DatabaseError::Duplicate | DatabaseError::DeleteBlocked(_) => StatusCode::CONFLICT, // unique constraint
                 DatabaseError::PoolNotInitialized
                 | DatabaseError::PoolAlreadyInitialized
                 | DatabaseError::Connection(_)
-                | DatabaseError::DatabaseMigrate(_) => StatusCode::SERVICE_UNAVAILABLE, // infra
+                | DatabaseError::DatabaseMigrate(_) => StatusCode::SERVICE_UNAVAILABLE,
+                // infra
             },
 
             // ---------- Redis ----------
