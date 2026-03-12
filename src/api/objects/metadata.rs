@@ -8,9 +8,8 @@ use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, FolderChild, ObjectKind, ObjectKindQuery,
-    fetch_all_user_object_ids, fetch_file_info, fetch_folder_children, fetch_folder_info,
-    update_file_metadata,
+    ApiError, AppState, Claims, FileRecord, FolderChild, FolderRecord, ObjectKind, ObjectKindQuery,
+    fetch_all_user_object_ids, fetch_folder_children, fetch_obj_info, update_file_metadata,
 };
 
 #[instrument(skip_all,fields(
@@ -55,12 +54,22 @@ pub async fn get_metadata(
 ) -> Result<impl IntoResponse, ApiError> {
     // it will search postgres if the file is 'active' and the claims.sub=user_id .
     let result = match query.kind {
-        ObjectKind::File => fetch_file_info(&appstate.db_pool, f_id, claims.sub)
-            .await
-            .map(|opt| opt.map(IntoResponse::into_response)),
-        ObjectKind::Folder => fetch_folder_info(&appstate.db_pool, f_id, claims.sub)
-            .await
-            .map(|opt| opt.map(IntoResponse::into_response)),
+        ObjectKind::File => fetch_obj_info::<FileRecord>(
+            &appstate.db_pool,
+            f_id,
+            claims.sub,
+            crate::ObjectKind::File,
+        )
+        .await
+        .map(|opt| opt.map(IntoResponse::into_response)),
+        ObjectKind::Folder => fetch_obj_info::<FolderRecord>(
+            &appstate.db_pool,
+            f_id,
+            claims.sub,
+            crate::ObjectKind::Folder,
+        )
+        .await
+        .map(|opt| opt.map(IntoResponse::into_response)),
     };
 
     result

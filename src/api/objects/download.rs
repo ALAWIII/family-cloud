@@ -10,9 +10,9 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, CRedisError, Claims, DownloadTokenData, FileSystemObject, ObjectKindQuery,
-    TokenPayload, TokenType, create_redis_key, fetch_file_info, fetch_folder_info, get_redis_con,
-    serialize_content,
+    ApiError, AppState, CRedisError, Claims, DownloadTokenData, FileRecord, FileSystemObject,
+    FolderRecord, ObjectKindQuery, TokenPayload, TokenType, create_redis_key, fetch_obj_info,
+    get_redis_con, serialize_content,
 };
 
 /// user -> request (object_id) -> server .
@@ -46,12 +46,17 @@ pub async fn download(
     // search database for file ownership and existance .
     // if deleted(file_id) || ~ found(file_id) || ~ own(user_id,file_id) || error(db)   = return error(NotFound)
     let obj: FileSystemObject = if query.kind.is_folder() {
-        fetch_folder_info(&appstate.db_pool, f_id, claims.sub)
-            .await?
-            .ok_or(ApiError::NotFound)?
-            .into()
+        fetch_obj_info::<FolderRecord>(
+            &appstate.db_pool,
+            f_id,
+            claims.sub,
+            crate::ObjectKind::Folder,
+        )
+        .await?
+        .ok_or(ApiError::NotFound)?
+        .into()
     } else {
-        fetch_file_info(&appstate.db_pool, f_id, claims.sub)
+        fetch_obj_info::<FileRecord>(&appstate.db_pool, f_id, claims.sub, crate::ObjectKind::File)
             .await?
             .ok_or(ApiError::NotFound)?
             .into()
