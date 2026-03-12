@@ -1939,6 +1939,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "itertools",
  "jsonwebtoken",
  "lettre",
  "mime_guess",
