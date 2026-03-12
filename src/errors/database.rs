@@ -22,4 +22,6 @@ pub enum DatabaseError {
     /// Unique constraint violation
     #[error("Database duplicate entry,account or email")]
     Duplicate,
+    #[error("{0}")]
+    DeleteBlocked(anyhow::Error),
 }
