@@ -5,8 +5,8 @@ use aws_sdk_s3::{
 };
 use deadpool_redis::redis::AsyncTypedCommands;
 use family_cloud::{
-    UpdateUserNameOps, UserProfile, create_redis_key, fetch_file_info, fetch_profile_info,
-    get_redis_con,
+    FileRecord, UpdateUserNameOps, UserProfile, create_redis_key, fetch_obj_info,
+    fetch_profile_info, get_redis_con,
 };
 use uuid::Uuid;
 
@@ -83,10 +83,11 @@ async fn delete_user_account_with_some_files() -> anyhow::Result<()> {
         b.is_err_and(|e| e.into_service_error().is_not_found()),
         "validate that the user bucket were deleted"
     );
-    let f = fetch_file_info(
+    let f = fetch_obj_info::<FileRecord>(
         &app.state.db_pool,
         tree.files.first().unwrap().id,
         account.id,
+        family_cloud::ObjectKind::File,
     )
     .await?;
     assert!(f.is_none(), "validate that all files were removed.");
