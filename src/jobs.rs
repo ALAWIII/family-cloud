@@ -101,7 +101,7 @@ pub async fn init_apalis(con: &PgPool, rfs: Client, w_names: WorkersName) -> Res
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeleteJob {
-    pub f_id: FileId,
+    pub f_id: Uuid,
     pub bucket: Uuid,
     pub account_deletion: bool,
 }
@@ -135,20 +135,22 @@ async fn delete_file_rustfs(
     ctx: WorkerContext,
     jobstate: Data<JobState>,
 ) -> Result<(), BoxDynError> {
-    debug!(worker_ready = ctx.is_ready(),file_id=?job.f_id.id,bucket=%job.bucket, "proccessing new delete job.");
+    debug!(worker_ready = ctx.is_ready(),file_id=?job.f_id,bucket=%job.bucket, "proccessing new delete job.");
     let bucket = job.bucket.to_string();
-    let key = job.f_id.id.unwrap().to_string();
+    let key = job.f_id.to_string();
 
     debug!("sending delete request to RustFS.");
     // No need to check existence first — delete_object is idempotent
-    let d_resp=jobstate
+    let d_resp = jobstate
         .rfs_client
         .delete_object()
         .bucket(&bucket)
         .key(&key)
         .send()
-        .await.inspect_err(|e|
-            error!(f_id=?job.f_id.id,user_id=%job.bucket, "failed to delete from RustFS: {}", e)); // only fails on transient errors → apalis retries
+        .await
+        .inspect_err(
+            |e| error!(f_id=?job.f_id,user_id=%job.bucket, "failed to delete from RustFS: {}", e),
+        ); // only fails on transient errors → apalis retries
     if let Err(e) = d_resp
         && ![Some("NoSuchKey"), Some("NoSuchBucket")].contains(&e.code())
     {
