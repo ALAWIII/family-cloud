@@ -78,13 +78,12 @@ async fn delete_account(
     info!("extracting refresh token from body or cookies.");
     let refresh_token = extract_refresh_token(&cookie_jar, body)?;
     let mut redis_con = get_redis_con(&appstate.redis_pool).await?;
-    info!("deleting refresh token from redis.");
     info!("deleting account and retreiving all files ids.");
     let f_ids: Vec<_> = delete_account_db(&appstate.db_pool, claims.sub)
         .await?
         .into_iter()
-        .map(|v| DeleteJob {
-            f_id: v,
+        .map(|id| DeleteJob {
+            f_id: id,
             bucket: claims.sub,
             account_deletion: true,
         })
@@ -101,6 +100,7 @@ async fn delete_account(
         info!("sending delete jobs with account_deletion=true.");
         send_delete_jobs_to_worker(f_ids).await?;
     }
+    info!("deleting refresh token from redis.");
     revoke_refresh_token(hmac_sec, refresh_token.expose_secret(), &mut redis_con).await?;
     info!("delete account success.");
     Ok(())
