@@ -1,7 +1,7 @@
 use crate::{
     ApiError, AppState, Claims, FileRecord, FolderRecord, ObjectKind, ObjectStatus, RustFSError,
-    get_user_available_storage, increment_storage_used_for_user, insert_folder, is_file_exists,
-    is_folder_exists, upsert_file, validate_display_name,
+    get_user_available_storage, increment_storage_used_for_user, insert_folder, is_obj_exists,
+    upsert_file, validate_display_name,
 };
 use anyhow::anyhow;
 use aws_sdk_s3::Client;
@@ -84,10 +84,14 @@ pub async fn upload(
     // checking whether the object already existed in RustFS and database.
     if uphead.object_kind.is_folder() {
         info!("the object is folder: {}", uphead.f_name);
-        if let Some(id) =
-            is_folder_exists(&appstate.db_pool, claims.sub, upq.parent_id, &uphead.f_name)
-                .await
-                .inspect_err(|e| error!("{}", e))?
+        if let Some(id) = is_obj_exists(
+            &appstate.db_pool,
+            claims.sub,
+            upq.parent_id,
+            &uphead.f_name,
+            ObjectKind::Folder,
+        )
+        .await?
         {
             error!(folder_id=%id,object_kind=%uphead.object_kind,folder_name=uphead.f_name,"already existed and active in the database.");
             return Err(ApiError::Conflict);
@@ -111,9 +115,15 @@ pub async fn upload(
         return Err(ApiError::ObjectTooLarge);
     }
     //-------------------------------- check if file exists under the same parent_id -----------------------
-    if let Some(id) = is_file_exists(&appstate.db_pool, claims.sub, upq.parent_id, &uphead.f_name)
-        .await
-        .inspect_err(|e| error!("{}", e))?
+    if let Some(id) = is_obj_exists(
+        &appstate.db_pool,
+        claims.sub,
+        upq.parent_id,
+        &uphead.f_name,
+        ObjectKind::File,
+    )
+    .await
+    .inspect_err(|e| error!("{}", e))?
     {
         error!(file_id=%id,kind=%uphead.object_kind,file_name=uphead.f_name,"already existed and active in the database.");
         return Err(ApiError::Conflict);
