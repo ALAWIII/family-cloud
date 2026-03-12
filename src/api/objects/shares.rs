@@ -16,11 +16,11 @@ use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, CRedisError, Claims, FileShared, FileSystemObject, FolderShared,
-    ObjectKind, TokenType,
+    ApiError, AppState, CRedisError, Claims, FileRecord, FileShared, FileSystemObject,
+    FolderRecord, FolderShared, ObjectKind, TokenType,
     api::objects::{VALIDATE_FILE_QUERY, VALIDATE_FOLDER_QUERY},
-    create_redis_key, deserialize_content, fetch_file_info, fetch_folder_info, get_redis_con,
-    serialize_content, validate_object_ancestor,
+    create_redis_key, deserialize_content, fetch_obj_info, get_redis_con, serialize_content,
+    validate_object_ancestor,
 };
 
 //------------------------------------share objects links ----------------------------
@@ -196,13 +196,13 @@ async fn create_share_token(
 ) -> Result<String, ApiError> {
     let f: FileSystemObject = if f_info.object_kind.is_folder() {
         info!("fetching a folder information.");
-        fetch_folder_info(db_pool, f_info.f_id, user_id)
+        fetch_obj_info::<FolderRecord>(db_pool, f_info.f_id, user_id, crate::ObjectKind::Folder)
             .await?
             .ok_or(ApiError::NotFound)?
             .into()
     } else {
         info!("fetching a file information.");
-        fetch_file_info(db_pool, f_info.f_id, user_id)
+        fetch_obj_info::<FileRecord>(db_pool, f_info.f_id, user_id, crate::ObjectKind::File)
             .await?
             .ok_or(ApiError::NotFound)?
             .into()
