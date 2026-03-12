@@ -1,10 +1,11 @@
 use anyhow::anyhow;
 use axum::{Extension, Json, debug_handler, extract::State};
+use itertools::{Either, Itertools};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, DeleteJob, JobError, ObjectKind, delete_files, delete_folders,
+    ApiError, AppState, Claims, DatabaseError, DeleteJob, ObjectKind, delete_objects,
     send_delete_jobs_to_worker,
 };
 use tracing::{error, info, instrument};
@@ -23,54 +24,47 @@ pub async fn delete(
             "list is empty, no items to delete!"
         )));
     }
-    let folders = f_list
-        .iter()
-        .filter(|v| v.kind.is_folder())
-        .map(|v| v.f_id)
-        .collect::<Vec<_>>();
-    let files = f_list
-        .iter()
-        .filter(|v| !v.kind.is_folder())
-        .map(|v| v.f_id)
-        .collect::<Vec<_>>();
+    let (folders, files): (Vec<_>, Vec<_>) = f_list.iter().partition_map(|v| {
+        if v.kind.is_folder() {
+            Either::Left(v.f_id)
+        } else {
+            Either::Right(v.f_id)
+        }
+    });
     info!(
         folders = folders.len(),
         files = files.len(),
         "filtering items into files/folders lists."
     );
+
     info!("sending delete_folders request to database.");
     let (folder_results, file_results) = tokio::join!(
-        delete_folders(&appstate.db_pool, claims.sub, &folders),
-        delete_files(&appstate.db_pool, claims.sub, &files)
+        delete_objects(&appstate.db_pool, claims.sub, &folders, ObjectKind::Folder),
+        delete_objects(&appstate.db_pool, claims.sub, &files, ObjectKind::File),
     );
+    let to_job = |id| DeleteJob {
+        f_id: id,
+        bucket: claims.sub,
+        account_deletion: false,
+    };
     let folder_results = folder_results.map(|v| {
-        v.ok_or(JobError::DeleteBlocked(anyhow!(
+        v.ok_or(DatabaseError::DeleteBlocked(anyhow!(
             "delete job is blocked by at least one copy job."
         )))
         .inspect_err(|e| error!("{}", e))
     });
+    let file_results = file_results.map(|v| v.unwrap_or_default());
     let files_list: Vec<DeleteJob> = match (folder_results, file_results) {
         (Err(f_e1), Err(_)) => return Err(f_e1.into()),
         (Ok(Err(f_e1)), Err(_)) => return Err(f_e1.into()),
-        (Ok(Ok(list)), Err(_)) | (Ok(Err(_)), Ok(list)) | (Err(_), Ok(list)) => list
-            .into_iter()
-            .map(|id| DeleteJob {
-                f_id: id,
-                bucket: claims.sub,
-                account_deletion: false,
-            })
-            .collect(),
+        (Ok(Ok(list)), Err(e)) | (Ok(Err(e)), Ok(list)) | (Err(e), Ok(list)) => {
+            error!("partial delete failure: {}", e);
+            list.into_iter().map(to_job).collect()
+        }
         (Ok(Ok(mut list1)), Ok(list2)) => {
             info!("collecting the new delete job files/folders lists into one list.");
             list1.extend(list2);
-            list1
-                .into_iter()
-                .map(|id| DeleteJob {
-                    f_id: id,
-                    bucket: claims.sub,
-                    account_deletion: false,
-                })
-                .collect()
+            list1.into_iter().map(to_job).collect()
         }
     };
     let length = files_list.len();

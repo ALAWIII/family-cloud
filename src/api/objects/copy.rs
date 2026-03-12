@@ -1,11 +1,11 @@
 use anyhow::anyhow;
 use axum::{Extension, Json, debug_handler, extract::State};
+use itertools::{Either, Itertools};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, CopyJob, ObjectKind, copy_files, copy_folders,
-    send_copy_jobs_to_worker,
+    ApiError, AppState, Claims, CopyJob, ObjectKind, copy_objects, send_copy_jobs_to_worker,
 };
 use tracing::{error, info, instrument};
 #[debug_handler]
@@ -24,38 +24,36 @@ pub async fn copy(
             "list is empty, no items to copy!"
         )));
     }
+    let (folders, files): (Vec<_>, Vec<_>) = copy_list.f_list.iter().partition_map(|v| {
+        if v.kind.is_folder() {
+            Either::Left(v.f_id)
+        } else {
+            Either::Right(v.f_id)
+        }
+    });
 
-    let files = copy_list
-        .f_list
-        .iter()
-        .filter(|v| !v.kind.is_folder())
-        .map(|v| v.f_id)
-        .collect::<Vec<_>>();
-    let folders = copy_list
-        .f_list
-        .iter()
-        .filter(|v| v.kind.is_folder())
-        .map(|v| v.f_id)
-        .collect::<Vec<_>>();
     info!(
         files_count = files.len(),
         folders_count = folders.len(),
         "filterd files and folders."
     );
     info!("fetching all files ids of folders recursively and mark files as copying in database.");
+
     let (folder_results, file_results) = tokio::join!(
-        copy_folders(
+        copy_objects(
             &appstate.db_pool,
             &folders,
             copy_list.dest_folder_id,
-            claims.sub
+            claims.sub,
+            true,
         ),
-        copy_files(
+        copy_objects(
             &appstate.db_pool,
             &files,
             copy_list.dest_folder_id,
-            claims.sub
-        ),
+            claims.sub,
+            false,
+        )
     );
 
     let list: Vec<CopyJob> = match (folder_results, file_results) {
