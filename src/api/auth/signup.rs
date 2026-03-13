@@ -34,7 +34,7 @@ fn create_pending_account(signup_info: &SignupRequest) -> Result<PendingAccount,
     user_name=signup_info.username,
     user_email=signup_info.email
 ))]
-pub(super) async fn signup(
+pub async fn signup(
     State(appstate): State<AppState>,
     Json(signup_info): Json<SignupRequest>,
 ) -> Result<StatusCode, ApiError> {

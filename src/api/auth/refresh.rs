@@ -11,7 +11,7 @@ use crate::{
 /// responsible for generating new jwt access tokens as a response
 #[debug_handler]
 #[instrument(skip_all)]
-pub(super) async fn refresh_token(
+pub async fn refresh_token(
     State(appstate): State<AppState>,
     cookie_jar: CookieJar,
     body: Option<Json<TokenPayload>>,

@@ -11,7 +11,7 @@ use crate::{
 
 #[debug_handler]
 #[instrument(skip_all,fields(email=credentials.email))]
-pub(super) async fn login(
+pub async fn login(
     State(appstate): State<AppState>,
     Json(credentials): Json<Credentials>,
 ) -> Result<Json<LoginResponse>, ApiError> {

@@ -8,6 +8,12 @@ use crate::{
     ApiError, AppState, Claims, DatabaseError, DeleteJob, ObjectKind, delete_objects,
     send_delete_jobs_to_worker,
 };
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeleteRequest {
+    pub f_id: Uuid,
+    pub kind: ObjectKind,
+}
+
 use tracing::{error, info, instrument};
 #[debug_handler]
 #[instrument(skip_all,fields(
@@ -77,9 +83,4 @@ pub async fn delete(
         .inspect_err(|e| error!("{}", e))?;
     info!("finish sending all jobs successfully.");
     Ok(Json(length))
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct DeleteRequest {
-    pub f_id: Uuid,
-    pub kind: ObjectKind,
 }

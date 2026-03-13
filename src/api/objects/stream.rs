@@ -51,6 +51,24 @@ static CONCURRENT_DOWNLOAD_CHECK_COUNTER: &str = r#"
         redis.call('EXPIRE', KEYS[1], ARGV[2])
         return 1
     "#;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StreamShareQuery {
+    pub token: Uuid,
+    pub f_id: Option<Uuid>,
+    pub kind: Option<ObjectKind>,
+    pub download: Option<bool>,
+}
+impl StreamShareQuery {
+    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
+        match (self.f_id, &self.kind) {
+            (Some(id), Some(k)) => Ok(Some((id, k.is_folder()))),
+            (None, None) => Ok(None),
+            _ => Err(ApiError::BadRequest(anyhow!(
+                "Partially provided parameters for stream share endpoint"
+            ))),
+        }
+    }
+}
 fn parse_range(value: &str) -> anyhow::Result<&str> {
     if !RANGE_RE.is_match(value) {
         let e = anyhow!("failed to parse range: {}", value);
@@ -163,24 +181,7 @@ pub async fn stream(
     response.extensions_mut().insert(c_guard);
     Ok(response)
 }
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StreamShareQuery {
-    pub token: Uuid,
-    pub f_id: Option<Uuid>,
-    pub kind: Option<ObjectKind>,
-    pub download: Option<bool>,
-}
-impl StreamShareQuery {
-    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
-        match (self.f_id, &self.kind) {
-            (Some(id), Some(k)) => Ok(Some((id, k.is_folder()))),
-            (None, None) => Ok(None),
-            _ => Err(ApiError::BadRequest(anyhow!(
-                "Partially provided parameters for stream share endpoint"
-            ))),
-        }
-    }
-}
+
 #[instrument(skip_all)]
 pub async fn stream_share(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

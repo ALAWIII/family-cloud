@@ -3,13 +3,13 @@ use axum::{
     extract::{Path, Query, State},
     response::IntoResponse,
 };
-use serde::{Deserialize, Serialize};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
     ApiError, AppState, Claims, FileRecord, FolderChild, FolderRecord, ObjectKind, ObjectKindQuery,
-    fetch_all_user_object_ids, fetch_folder_children, fetch_obj_info, update_file_metadata,
+    UpdateMetadata, fetch_all_user_object_ids, fetch_folder_children, fetch_obj_info,
+    update_file_metadata,
 };
 
 #[instrument(skip_all,fields(
@@ -95,14 +95,4 @@ pub async fn update_metadata(
             .await
             .map(Json)?,
     )
-}
-
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct UpdateMetadata {
-    pub metadata: serde_json::Value,
-}
-impl UpdateMetadata {
-    pub fn new(metadata: serde_json::Value) -> Self {
-        Self { metadata }
-    }
 }

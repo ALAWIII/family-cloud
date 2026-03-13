@@ -8,6 +8,18 @@ use crate::{
     ApiError, AppState, Claims, CopyJob, ObjectKind, copy_objects, send_copy_jobs_to_worker,
 };
 use tracing::{error, info, instrument};
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CopyRequest {
+    pub dest_folder_id: Uuid,
+    pub f_list: Vec<CopyItemRequest>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CopyItemRequest {
+    pub f_id: Uuid,
+    pub kind: ObjectKind,
+}
+
 #[debug_handler]
 #[instrument(skip_all, fields(
     user_id=%claims.sub,
@@ -78,15 +90,4 @@ pub async fn copy(
         .inspect_err(|e| error!("{e}"))?;
     info!("copying files success.");
     Ok(Json(length))
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CopyRequest {
-    pub dest_folder_id: Uuid,
-    pub f_list: Vec<CopyItemRequest>,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CopyItemRequest {
-    pub f_id: Uuid,
-    pub kind: ObjectKind,
 }

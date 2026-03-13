@@ -1,24 +1,23 @@
 use anyhow::anyhow;
 use axum::{
-    Extension, Json, Router, debug_handler,
+    Extension, Json, debug_handler,
     extract::{Path, Query, State},
     response::IntoResponse,
-    routing::get,
 };
 use deadpool_redis::{
     Connection,
     redis::{self, AsyncTypedCommands, ExpireOption},
 };
-use serde::{Deserialize, Serialize};
 
 use sqlx::PgPool;
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, CRedisError, Claims, FileRecord, FileShared, FileSystemObject,
-    FolderRecord, FolderShared, ObjectKind, TokenType, create_redis_key, deserialize_content,
-    fetch_obj_info, get_redis_con, serialize_content, validate_object_ancestor,
+    AccessQuery, ApiError, AppState, CRedisError, Claims, FileRecord, FileShared, FileSystemObject,
+    FolderRecord, FolderShared, ObjectKind, SharedObjectReq, SharedTokenResponse, TokenType,
+    create_redis_key, deserialize_content, fetch_obj_info, get_redis_con, serialize_content,
+    validate_object_ancestor,
 };
 
 //------------------------------------share objects links ----------------------------
@@ -32,42 +31,13 @@ local token = redis.call('HGET', KEYS[1], KEYS[2])
        return nil
    end
 "#;
-pub fn sharing_object() -> Router<AppState> {
-    Router::new().route("/api/shares/{token}", get(access_object))
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SharedObjectReq {
-    pub f_id: Uuid,
-    pub object_kind: ObjectKind,
-    pub ttl: i64,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SharedTokenResponse {
-    pub token: String,
-}
-//both must occure together
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AccessQuery {
-    pub f_id: Option<Uuid>,
-    pub kind: Option<ObjectKind>,
-}
-impl AccessQuery {
-    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
-        match (self.f_id, self.kind.as_ref()) {
-            (Some(id), Some(kind)) => Ok(Some((id, kind.is_folder()))),
-            (None, None) => Ok(None),
-            _ => Err(ApiError::BadRequest(anyhow!(
-                "Partially provided parameters"
-            ))),
-        }
-    }
-}
+
 #[instrument(skip_all,fields(
     token=%token,
     access_params=?access_params
 ))]
 #[debug_handler]
-async fn access_object(
+pub async fn access_object(
     State(appstate): State<AppState>,
     Path(token): Path<Uuid>,
     Query(access_params): Query<AccessQuery>,

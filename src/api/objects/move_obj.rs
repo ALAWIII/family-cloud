@@ -15,6 +15,17 @@ pub struct MoveRequest {
     pub destination_id: Uuid,
     pub object_kind: ObjectKind,
 }
+#[derive(Debug, Serialize)]
+pub struct MoveResponse {
+    pub f_id: Uuid,
+}
+#[derive(Debug, Deserialize, FromRow)]
+pub struct MoveDbResponse {
+    pub moved_id: Option<Uuid>,
+    pub not_found: bool,
+    pub conflict: bool,
+}
+
 #[debug_handler]
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
@@ -63,17 +74,6 @@ pub async fn move_object(
     };
     info!("move file/folder success.");
     Ok(Json(resp))
-}
-
-#[derive(Debug, Serialize)]
-pub struct MoveResponse {
-    pub f_id: Uuid,
-}
-#[derive(Debug, Deserialize, FromRow)]
-pub struct MoveDbResponse {
-    pub moved_id: Option<Uuid>,
-    pub not_found: bool,
-    pub conflict: bool,
 }
 
 pub async fn change_object_parent_id(

@@ -5,10 +5,10 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiError, AppState, Claims, DeleteJob, RustFSError, TokenPayload, UserProfile,
-    api::objects::UserStorageInfo, delete_account_db, delete_user_bucket, extract_refresh_token,
-    fetch_profile_info, get_redis_con, get_user_available_storage, revoke_refresh_token,
-    send_delete_jobs_to_worker, update_account_username,
+    ApiError, AppState, Claims, DeleteJob, RustFSError, TokenPayload, UserProfile, UserStorageInfo,
+    delete_account_db, delete_user_bucket, extract_refresh_token, fetch_profile_info,
+    get_redis_con, get_user_available_storage, revoke_refresh_token, send_delete_jobs_to_worker,
+    update_account_username,
 };
 use tracing::{info, instrument};
 //------------------------------------user management-------

@@ -10,7 +10,7 @@ use crate::{
     ApiError, AppState, TokenPayload, extract_refresh_token, get_redis_con, revoke_refresh_token,
 };
 #[instrument(skip_all)]
-pub(super) async fn logout(
+pub async fn logout(
     State(appstate): State<AppState>,
     cookie_jar: CookieJar,
     body: Option<Json<TokenPayload>>,

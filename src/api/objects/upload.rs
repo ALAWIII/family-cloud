@@ -29,7 +29,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use mime_guess::mime;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -43,11 +43,6 @@ const MAX_CONCURRENT_UPLOADS: usize = 4;
 struct PartToUpload {
     part_number: i32,
     data: Bytes,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserStorageInfo {
-    pub storage_quota_bytes: i64,
-    pub storage_used_bytes: i64,
 }
 
 #[derive(Debug)]
