@@ -90,36 +90,7 @@ pub async fn insert_user_with_root_folder(
 
     Ok(())
 }
-pub async fn insert_new_account(user: &User, db_pool: &PgPool) -> Result<(), DatabaseError> {
-    debug!(
-    user_id=%user.id,
-    user_name=user.username,
-    email=user.email,
-    "inserting new account user information into database");
-    sqlx::query!(
-        r#"INSERT INTO users (id, username, email, password_hash, created_at, storage_quota_bytes, storage_used_bytes,root_folder)
-         VALUES ($1, $2, $3, $4, $5, $6, $7,$8)"#,
-        user.id,
-        user.username,
-        user.email,
-        user.password_hash,
-        user.created_at,
-        user.storage_quota_bytes ,
-        user.storage_used_bytes,
-        user.root_folder
-    )
-    .execute(db_pool)
-    .await.map_err(|e|{
-        e.as_database_error()
-            .filter(|db_err|
-                db_err.constraint()==Some("users_email_key"))
-            .map(|_|DatabaseError::Duplicate)
-            .unwrap_or(DatabaseError::Connection(e))
-            })
-    .inspect_err(|e| error!("{}", e))?;
-    debug!("successfully inserting new user");
-    Ok(())
-}
+
 /// searching for a user by its email ,
 ///
 /// # Error
