@@ -10,7 +10,7 @@ use crate::{
     get_redis_con, revoke_refresh_token, send_delete_jobs_to_worker, update_account_username,
     validate_jwt_access_token,
 };
-use tracing::{error, info, instrument};
+use tracing::{info, instrument};
 //------------------------------------user management-------
 
 pub fn user_management(hmac: SecretString) -> Router<AppState> {
