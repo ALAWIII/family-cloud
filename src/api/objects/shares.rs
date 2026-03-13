@@ -17,10 +17,8 @@ use uuid::Uuid;
 
 use crate::{
     ApiError, AppState, CRedisError, Claims, FileRecord, FileShared, FileSystemObject,
-    FolderRecord, FolderShared, ObjectKind, TokenType,
-    api::objects::{VALIDATE_FILE_QUERY, VALIDATE_FOLDER_QUERY},
-    create_redis_key, deserialize_content, fetch_obj_info, get_redis_con, serialize_content,
-    validate_object_ancestor,
+    FolderRecord, FolderShared, ObjectKind, TokenType, create_redis_key, deserialize_content,
+    fetch_obj_info, get_redis_con, serialize_content, validate_object_ancestor,
 };
 
 //------------------------------------share objects links ----------------------------
@@ -106,7 +104,7 @@ async fn access_object(
             obj.owner_id(),
             obj.id(),
             f_id,
-            VALIDATE_FOLDER_QUERY,
+            ObjectKind::Folder,
         )
         .await
         .map(|v| {
@@ -122,7 +120,7 @@ async fn access_object(
             obj.owner_id(),
             obj.id(),
             f_id,
-            VALIDATE_FILE_QUERY,
+            ObjectKind::File,
         )
         .await
         .map(|v| {

@@ -15,6 +15,8 @@ static DELETE_FOLDERS: &str = include_str!("../../db_queries/delete_folders.sql"
 static COPY_FILES: &str = include_str!("../../db_queries/copy_files.sql");
 static COPY_FOLDERS: &str = include_str!("../../db_queries/copy_folders.sql");
 static STREAM_FOLDER: &str = include_str!("../../db_queries/stream_folder.sql");
+static VALIDATE_FILE_QUERY: &str = include_str!("../../db_queries/validate_file_ancestor.sql");
+static VALIDATE_FOLDER_QUERY: &str = include_str!("../../db_queries/validate_folder_ancestor.sql");
 static FOLDER_INFO: &str = r#"
 SELECT *
 FROM folders
@@ -330,11 +332,16 @@ pub async fn validate_object_ancestor<T>(
     owner_id: Uuid,
     grand_p_id: Uuid,
     f_id: Uuid,
-    query: &str,
+    kind: ObjectKind,
 ) -> Result<Option<T>, DatabaseError>
 where
     T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
 {
+    let query = if kind.is_folder() {
+        VALIDATE_FOLDER_QUERY
+    } else {
+        VALIDATE_FILE_QUERY
+    };
     let r = sqlx::query_as::<_, T>(query)
         .bind(f_id)
         .bind(owner_id)

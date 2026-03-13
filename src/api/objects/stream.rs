@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use crate::{
     ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, FileDownload, FileShared,
     FileStream, FileSystemObject, FolderShared, ObjectKind, RustFSError, StreamQuery, TokenType,
-    api::objects::{VALIDATE_FILE_QUERY, VALIDATE_FOLDER_QUERY},
     create_redis_key, deserialize_content, fetch_all_file_ids_paths, fetch_redis_data,
     get_redis_con, validate_object_ancestor,
 };
@@ -242,7 +241,7 @@ pub async fn stream_share(
                 d_content.owner_id(),
                 d_content.id(),
                 target_id,
-                VALIDATE_FOLDER_QUERY,
+                ObjectKind::Folder,
             )
             .await?
             .ok_or(ApiError::Forbidden)
@@ -272,7 +271,7 @@ pub async fn stream_share(
                 d_content.owner_id(),
                 d_content.id(),
                 target_id,
-                VALIDATE_FILE_QUERY,
+                ObjectKind::File,
             )
             .await?
             .ok_or(ApiError::Forbidden)
