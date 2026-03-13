@@ -90,9 +90,7 @@ impl IntoResponse for ApiError {
 
             // ---------- Crypto ----------
             ApiError::Crypto(c) => match c {
-                CryptoError::AuthFailed
-                | CryptoError::TokenExpired
-                | CryptoError::TokenDecode(_) => StatusCode::UNAUTHORIZED, // semantic auth errors
+                CryptoError::TokenDecode(_) => StatusCode::UNAUTHORIZED, // semantic auth errors
                 CryptoError::PasswordHash(_)
                 | CryptoError::Jwt(_)
                 | CryptoError::RngFailed(_)

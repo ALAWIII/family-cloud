@@ -131,6 +131,10 @@ pub async fn stream(
         info!("getting all file ids and their full paths to start streaming the whole folder.");
         let files: Vec<FileDownload> =
             fetch_all_file_ids_paths(&appstate.db_pool, folder.owner_id, folder.id).await?;
+        if files.is_empty() {
+            return Err(ApiError::Conflict);
+            // nothing to stream !!
+        }
         stream_folder(
             appstate.rustfs_con.clone(),
             &folder.bucket_name(),
@@ -372,10 +376,6 @@ async fn stream_folder(
 ) -> Result<Response, RustFSError> {
     debug!("start streaming the compressed folder.");
     // fetches a list of names that starts with a folder prefix
-    if files.is_empty() {
-        return Err(RustFSError::EmptyFolder);
-        // nothing to stream !!
-    }
     debug!("allocating a new channel buffer with 1MB in size.");
     let (writer, reader) = tokio::io::duplex(1048576);
     let bucket = bucket.to_string();

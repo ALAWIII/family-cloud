@@ -24,13 +24,4 @@ pub enum CryptoError {
     /// HMAC misconfiguration
     #[error("Invalid HMAC configuration")]
     Hmac(#[from] InvalidLength),
-
-    // -------- Domain auth failures --------
-    /// Invalid credentials / token
-    #[error("Authentication failed")]
-    AuthFailed,
-
-    /// Token expired (semantic, not crypto failure)
-    #[error("Token expired")]
-    TokenExpired,
 }
