@@ -20,7 +20,6 @@ use deadpool_redis::{
     Connection,
     redis::{self},
 };
-use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 use tokio_util::io::ReaderStream;
@@ -28,7 +27,6 @@ use tracing::{debug, error, info, instrument};
 
 use regex::Regex;
 use std::sync::LazyLock;
-use uuid::Uuid;
 
 static RANGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^bytes=(\d+-\d*|-\d+)(,(\d+-\d*|-\d+))*$").unwrap());
