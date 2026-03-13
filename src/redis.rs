@@ -95,13 +95,3 @@ pub async fn delete_token_from_redis(
 
     Ok(count)
 }
-
-/// on success,failure or user disconnection always delete the token from the hset , so that decrementing the counter of allowed concurrent user.
-pub async fn decrement_concurrent_download(
-    redis_con: &mut Connection,
-    token: &str,
-    user_key: &str,
-) -> Result<(), CRedisError> {
-    redis_con.hdel(user_key, token).await?;
-    Ok(())
-}
