@@ -1,24 +1,11 @@
 use anyhow::anyhow;
 use axum::{Extension, Json, debug_handler, extract::State};
 use itertools::{Either, Itertools};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, CopyJob, ObjectKind, copy_objects, send_copy_jobs_to_worker,
+    ApiError, AppState, Claims, CopyJob, CopyRequest, copy_objects, send_copy_jobs_to_worker,
 };
 use tracing::{error, info, instrument};
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CopyRequest {
-    pub dest_folder_id: Uuid,
-    pub f_list: Vec<CopyItemRequest>,
-}
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CopyItemRequest {
-    pub f_id: Uuid,
-    pub kind: ObjectKind,
-}
 
 #[debug_handler]
 #[instrument(skip_all, fields(

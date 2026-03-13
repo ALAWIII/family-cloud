@@ -559,6 +559,56 @@ impl UpdateMetadata {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CopyRequest {
+    pub dest_folder_id: Uuid,
+    pub f_list: Vec<CopyItemRequest>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CopyItemRequest {
+    pub f_id: Uuid,
+    pub kind: ObjectKind,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeleteRequest {
+    pub f_id: Uuid,
+    pub kind: ObjectKind,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MoveRequest {
+    pub source_id: Uuid,
+    pub destination_id: Uuid,
+    pub object_kind: ObjectKind,
+}
+#[derive(Debug, Serialize)]
+pub struct MoveResponse {
+    pub f_id: Uuid,
+}
+#[derive(Debug, Deserialize, FromRow)]
+pub struct MoveDbResponse {
+    pub moved_id: Option<Uuid>,
+    pub not_found: bool,
+    pub conflict: bool,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StreamShareQuery {
+    pub token: Uuid,
+    pub f_id: Option<Uuid>,
+    pub kind: Option<ObjectKind>,
+    pub download: Option<bool>,
+}
+impl StreamShareQuery {
+    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
+        match (self.f_id, &self.kind) {
+            (Some(id), Some(k)) => Ok(Some((id, k.is_folder()))),
+            (None, None) => Ok(None),
+            _ => Err(ApiError::BadRequest(anyhow!(
+                "Partially provided parameters for stream share endpoint"
+            ))),
+        }
+    }
+}
+//-----------------------------
 pub type CommandAsyncFnDyn<E> =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>> + Send + Sync>; //O = Result<(),BoxDynError>
 pub struct CloudCommand {

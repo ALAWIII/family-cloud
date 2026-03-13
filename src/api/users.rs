@@ -2,13 +2,12 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use axum::{Extension, Json, extract::State};
 use axum_extra::extract::CookieJar;
 use secrecy::ExposeSecret;
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiError, AppState, Claims, DeleteJob, RustFSError, TokenPayload, UserProfile, UserStorageInfo,
-    delete_account_db, delete_user_bucket, extract_refresh_token, fetch_profile_info,
-    get_redis_con, get_user_available_storage, revoke_refresh_token, send_delete_jobs_to_worker,
-    update_account_username,
+    ApiError, AppState, Claims, DeleteJob, RustFSError, TokenPayload, UpdateUserNameOps,
+    UserProfile, UserStorageInfo, delete_account_db, delete_user_bucket, extract_refresh_token,
+    fetch_profile_info, get_redis_con, get_user_available_storage, revoke_refresh_token,
+    send_delete_jobs_to_worker, update_account_username,
 };
 use tracing::{info, instrument};
 //------------------------------------user management-------
@@ -45,11 +44,6 @@ pub(super) async fn update_user_username(
         update_account_username(&appstate.db_pool, claims.sub, &username.user_name).await?;
     username.user_name = db_result;
     Ok(Json(username))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateUserNameOps {
-    pub user_name: String,
 }
 
 #[instrument(skip_all,fields(

@@ -65,3 +65,7 @@ impl From<User> for UserProfile {
         }
     }
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateUserNameOps {
+    pub user_name: String,
+}

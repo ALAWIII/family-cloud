@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 
 use crate::{
     ApiError, AppState, CRedisError, CleanupGuard, DownloadTokenData, FileDownload, FileShared,
-    FileStream, FileSystemObject, FolderShared, ObjectKind, RustFSError, StreamQuery, TokenType,
-    create_redis_key, deserialize_content, fetch_all_file_ids_paths, fetch_redis_data,
-    get_redis_con, validate_object_ancestor,
+    FileStream, FileSystemObject, FolderShared, ObjectKind, RustFSError, StreamQuery,
+    StreamShareQuery, TokenType, create_redis_key, deserialize_content, fetch_all_file_ids_paths,
+    fetch_redis_data, get_redis_con, validate_object_ancestor,
 };
 
 use anyhow::anyhow;
@@ -51,24 +51,7 @@ static CONCURRENT_DOWNLOAD_CHECK_COUNTER: &str = r#"
         redis.call('EXPIRE', KEYS[1], ARGV[2])
         return 1
     "#;
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StreamShareQuery {
-    pub token: Uuid,
-    pub f_id: Option<Uuid>,
-    pub kind: Option<ObjectKind>,
-    pub download: Option<bool>,
-}
-impl StreamShareQuery {
-    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
-        match (self.f_id, &self.kind) {
-            (Some(id), Some(k)) => Ok(Some((id, k.is_folder()))),
-            (None, None) => Ok(None),
-            _ => Err(ApiError::BadRequest(anyhow!(
-                "Partially provided parameters for stream share endpoint"
-            ))),
-        }
-    }
-}
+
 fn parse_range(value: &str) -> anyhow::Result<&str> {
     if !RANGE_RE.is_match(value) {
         let e = anyhow!("failed to parse range: {}", value);

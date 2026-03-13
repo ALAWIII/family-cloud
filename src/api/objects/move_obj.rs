@@ -1,30 +1,12 @@
 use axum::{Extension, Json, debug_handler, extract::State};
-use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, prelude::FromRow};
+use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{ApiError, AppState, Claims, DatabaseError, ObjectKind};
+use crate::{ApiError, AppState, Claims, DatabaseError, MoveDbResponse, MoveRequest, MoveResponse};
 use tracing::{error, info, instrument};
 
 static MOVE_FILE: &str = include_str!("../../../db_queries/move_file.sql");
 static MOVE_FOLDER: &str = include_str!("../../../db_queries/move_folder.sql");
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MoveRequest {
-    pub source_id: Uuid,
-    pub destination_id: Uuid,
-    pub object_kind: ObjectKind,
-}
-#[derive(Debug, Serialize)]
-pub struct MoveResponse {
-    pub f_id: Uuid,
-}
-#[derive(Debug, Deserialize, FromRow)]
-pub struct MoveDbResponse {
-    pub moved_id: Option<Uuid>,
-    pub not_found: bool,
-    pub conflict: bool,
-}
 
 #[debug_handler]
 #[instrument(skip_all,fields(

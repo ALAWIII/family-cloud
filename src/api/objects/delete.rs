@@ -1,18 +1,11 @@
 use anyhow::anyhow;
 use axum::{Extension, Json, debug_handler, extract::State};
 use itertools::{Either, Itertools};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
-    ApiError, AppState, Claims, DatabaseError, DeleteJob, ObjectKind, delete_objects,
-    send_delete_jobs_to_worker,
+    ApiError, AppState, Claims, DatabaseError, DeleteJob, DeleteRequest, ObjectKind,
+    delete_objects, send_delete_jobs_to_worker,
 };
-#[derive(Debug, Deserialize, Serialize)]
-pub struct DeleteRequest {
-    pub f_id: Uuid,
-    pub kind: ObjectKind,
-}
 
 use tracing::{error, info, instrument};
 #[debug_handler]
