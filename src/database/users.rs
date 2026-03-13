@@ -9,6 +9,7 @@ use tracing::{debug, error};
 use uuid::Uuid;
 static DELETE_ACCOUNT_QUERY: &str = include_str!("../../db_queries/delete_account.sql");
 
+/// used when user upload new file, so that to increment the user storage usage.
 pub async fn increment_storage_used_for_user(
     con: &PgPool,
     user_id: Uuid,
@@ -25,7 +26,7 @@ pub async fn increment_storage_used_for_user(
     .await?;
     Ok(r.rows_affected())
 }
-
+/// used to update the upper bound of user maximum allowed storage.
 pub async fn update_user_maximum_storage(
     con: &PgPool,
     user_id: Uuid,
@@ -40,6 +41,7 @@ pub async fn update_user_maximum_storage(
     .await?;
     Ok(r.rows_affected())
 }
+/// used to insert new user account with its own root folder.
 pub async fn insert_user_with_root_folder(
     user: &User,
     folder: &FolderRecord,
@@ -116,6 +118,7 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     .inspect_err(|e| error!("{}", e))
     // if user not found !!
 }
+/// used to search for user account by its id.
 pub async fn fetch_profile_info(
     con: &PgPool,
     user_id: Uuid,
@@ -148,6 +151,9 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>,
             .inspect_err(|e| error!("database error when searching for id by email : {}", e))?,
     )
 }
+/// accepts user id and fires a massive deletion operation ,
+///
+/// returns all file ids to be send and deleted to RustFS.
 pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, DatabaseError> {
     let res = sqlx::query_as::<_, FileId>(DELETE_ACCOUNT_QUERY)
         .bind(user_id)
@@ -156,6 +162,7 @@ pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
         .inspect_err(|e| error!("{e}"))?;
     Ok(res.into_iter().filter_map(|v| v.id).collect())
 }
+/// searches for the user email by providing its id.
 pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, DatabaseError> {
     debug!(user_id=%id,"fetching email by user id.");
     Ok(
@@ -167,7 +174,7 @@ pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>,
             })?,
     )
 }
-
+/// accepts user id and new email , and then updates its email field.
 pub async fn update_account_email(
     con: &PgPool,
     id: Uuid,
@@ -185,7 +192,7 @@ pub async fn update_account_email(
         })
         .inspect_err(|e| error!("error updating account email : {}", e))
 }
-/// Update password
+/// updates user password.
 pub async fn update_account_password(
     con: &PgPool,
     user_id: Uuid,
@@ -201,6 +208,7 @@ pub async fn update_account_password(
     .await
     .inspect_err(|e| error!("database error: {}", e))?)
 }
+/// updates account username.
 pub async fn update_account_username(
     con: &PgPool,
     user_id: Uuid,
@@ -218,6 +226,8 @@ pub async fn update_account_username(
     .await?;
     Ok(v.username)
 }
+
+/// returns the maximum and available storage for a given user.
 pub async fn get_user_available_storage(
     con: &PgPool,
     user_id: Uuid,
