@@ -1,6 +1,7 @@
 use crate::ApiError;
 use crate::CRedisError;
 use crate::get_redis_con;
+use anyhow::anyhow;
 use axum::Json;
 use axum::response::IntoResponse;
 use chrono::DateTime;
@@ -514,6 +515,47 @@ impl From<&FileRecord> for FileStream {
             etag: value.etag.to_string(),
             mime_type: value.mime_type.to_string(),
         }
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SharedObjectReq {
+    pub f_id: Uuid,
+    pub object_kind: ObjectKind,
+    pub ttl: i64,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SharedTokenResponse {
+    pub token: String,
+}
+//both must occure together
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AccessQuery {
+    pub f_id: Option<Uuid>,
+    pub kind: Option<ObjectKind>,
+}
+impl AccessQuery {
+    pub fn validate(&self) -> Result<Option<(Uuid, bool)>, ApiError> {
+        match (self.f_id, self.kind.as_ref()) {
+            (Some(id), Some(kind)) => Ok(Some((id, kind.is_folder()))),
+            (None, None) => Ok(None),
+            _ => Err(ApiError::BadRequest(anyhow!(
+                "Partially provided parameters"
+            ))),
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserStorageInfo {
+    pub storage_quota_bytes: i64,
+    pub storage_used_bytes: i64,
+}
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct UpdateMetadata {
+    pub metadata: serde_json::Value,
+}
+impl UpdateMetadata {
+    pub fn new(metadata: serde_json::Value) -> Self {
+        Self { metadata }
     }
 }
 
