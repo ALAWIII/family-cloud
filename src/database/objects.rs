@@ -1,6 +1,6 @@
 use crate::{
     CopyJobRecord, DatabaseError, FileDownload, FileId, FileRecord, FolderChild, FolderRecord,
-    ObjectKind, UpdateMetadata,
+    MoveDbResponse, ObjectKind, UpdateMetadata,
 };
 use anyhow::anyhow;
 use serde::de::DeserializeOwned;
@@ -17,6 +17,9 @@ static COPY_FOLDERS: &str = include_str!("../../db_queries/copy_folders.sql");
 static STREAM_FOLDER: &str = include_str!("../../db_queries/stream_folder.sql");
 static VALIDATE_FILE_QUERY: &str = include_str!("../../db_queries/validate_file_ancestor.sql");
 static VALIDATE_FOLDER_QUERY: &str = include_str!("../../db_queries/validate_folder_ancestor.sql");
+static MOVE_FILE: &str = include_str!("../../db_queries/move_file.sql");
+static MOVE_FOLDER: &str = include_str!("../../db_queries/move_folder.sql");
+
 static FOLDER_INFO: &str = r#"
 SELECT *
 FROM folders
@@ -357,4 +360,26 @@ where
             error!("failed to execute validate child and obtain folder metadata and children : {e}")
         })?;
     Ok(r)
+}
+
+pub async fn change_object_parent_id(
+    con: &PgPool,
+    owner_id: Uuid,
+    source_id: Uuid,
+    dest_folder_id: Uuid,
+    kind: ObjectKind,
+) -> Result<MoveDbResponse, DatabaseError> {
+    let query = if kind.is_folder() {
+        MOVE_FOLDER
+    } else {
+        MOVE_FILE
+    };
+    let v = sqlx::query_as::<_, MoveDbResponse>(query)
+        .bind(source_id)
+        .bind(owner_id)
+        .bind(dest_folder_id)
+        .fetch_one(con)
+        .await
+        .inspect_err(|e| error!("failed to execute change parent query: {}", e))?;
+    Ok(v)
 }
