@@ -2,17 +2,14 @@ use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region},
     error::SdkError,
-    operation::{
-        delete_bucket::{DeleteBucketError, DeleteBucketOutput},
-        head_object::HeadObjectOutput,
-    },
+    operation::delete_bucket::{DeleteBucketError, DeleteBucketOutput},
 };
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::OnceLock;
 use tracing::{error, instrument};
 use uuid::Uuid;
 
-use crate::{FileRecord, RustFSError, RustfsConfig};
+use crate::{RustFSError, RustfsConfig};
 
 static RUST_FS_CONN: OnceLock<Client> = OnceLock::new();
 
@@ -64,17 +61,4 @@ pub async fn delete_user_bucket(
         .send()
         .await
         .inspect_err(|e| error!("{}", e))
-}
-pub async fn fetch_object_metadata(
-    rfs_con: &Client,
-    file: &FileRecord,
-) -> Result<HeadObjectOutput, RustFSError> {
-    rfs_con
-        .head_object()
-        .bucket(file.bucket_name()) // user_id = bucket
-        .key(file.key())
-        .checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled)
-        .send()
-        .await
-        .map_err(|e| RustFSError::Metadata(e.into()))
 }
