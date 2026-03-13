@@ -57,7 +57,7 @@ ON CONFLICT (id) DO UPDATE SET
     checksum      = EXCLUDED.checksum
 "#;
 
-/// gets the metadata of an object by its id and the owner_id. T either FileRecord or FolderRecord
+/// gets the metadata of an object by its id and the owner_id. T either FileRecord or FolderRecord.
 pub async fn fetch_obj_info<T>(
     con: &PgPool,
     obj_id: Uuid,
@@ -79,7 +79,7 @@ where
 
     Ok(rec)
 }
-
+/// insert new file or update if already exists.
 pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResult, DatabaseError> {
     Ok(sqlx::query(UPSERT_FILE)
         .bind(file.id)
@@ -100,6 +100,7 @@ pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResul
         .await?)
 }
 
+/// used to add a logical folder in database when user request to upload folder.
 pub async fn insert_folder(
     con: &PgPool,
     folder: &FolderRecord,
@@ -125,6 +126,8 @@ pub async fn insert_folder(
     .await
     .inspect_err(|e| error!("failed to insert folder: {}", e))?)
 }
+
+/// for searching if a given file/folder id exists and active in db.
 pub async fn is_obj_exists(
     con: &PgPool,
     owner_id: Uuid,
@@ -146,8 +149,7 @@ pub async fn is_obj_exists(
         .inspect_err(|e| error!("{e}"))?)
 }
 
-// fetch folder/ file metadata
-
+/// used to obtain all user file/folder ids for syncing purposes.
 pub async fn fetch_all_user_object_ids(
     con: &PgPool,
     owner_id: Uuid,
@@ -163,6 +165,7 @@ pub async fn fetch_all_user_object_ids(
     .fetch_all(con)
     .await?)
 }
+/// used to modify/update the metadata field of a file.
 pub async fn update_file_metadata(
     con: &PgPool,
     owner_id: Uuid,
@@ -185,6 +188,8 @@ pub async fn update_file_metadata(
     .ok_or(DatabaseError::NotFound(anyhow!("update metadata faliled"))) // row didn't exist or wrong owner
     .map(|v| UpdateMetadata::new(v.metadata.unwrap_or(metadata)))
 }
+
+/// used to get all ids of active files from database to prepare them for streaming/downloading.
 pub async fn fetch_all_file_ids_paths(
     con: &PgPool,
     owner_id: Uuid,
@@ -199,7 +204,7 @@ pub async fn fetch_all_file_ids_paths(
 
     Ok(files)
 }
-
+/// used in the copy job handler for marking the copying file as active and decrementing its parent copying children count by 1 , so that releasing the lock of modifing the file in database.
 pub async fn finalize_copy(
     pool: &PgPool,
     file_id: Uuid,
@@ -234,10 +239,9 @@ pub async fn finalize_copy(
     Ok(())
 }
 
-/// accepts a list of folders and the tries to mark the folders and their files as deleted recursively and returns all files ids that are decendant of the deleted folders.
+/// accepts a list of folders/files and then tries to mark the folders and their files as deleted recursively and returns all files ids that are decendant of the deleted folders.
 ///
-/// marks every parent_id folder of every file by 1.
-/// accepts a list of files ids and then marks all of them as deleted , it also increments the parent_id of every file by 1.
+/// accepts a list of files ids and then marks all of them as deleted.
 pub async fn delete_objects(
     con: &PgPool,
     owner_id: Uuid,
@@ -272,6 +276,7 @@ pub async fn delete_objects(
     Ok(Some(files_id.into_iter().filter_map(|f| f.id).collect()))
 }
 
+/// accepts list of files or folders and then replicate them under the target destination.
 pub async fn copy_objects(
     con: &PgPool,
     objects_ids: &[Uuid],
@@ -301,7 +306,7 @@ pub async fn copy_objects(
         .inspect_err(|e| error!("failed to commit copy {} transaction: {}", is_folder, e))?;
     Ok(files_id)
 }
-
+/// accepts folder id and fetches all its direct children as a response.
 pub async fn fetch_folder_children(
     con: &PgPool,
     f_id: Uuid,
@@ -319,7 +324,7 @@ pub async fn fetch_folder_children(
     .fetch_all(con)
     .await?)
 }
-
+/// used in sharing purposes to validate if a given object id is within the shared scooped token .
 pub async fn validate_object_ancestor<T>(
     con: &PgPool,
     owner_id: Uuid,
