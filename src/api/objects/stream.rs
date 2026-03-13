@@ -130,9 +130,7 @@ pub async fn stream(
         let folder = d_content.object_d.get_folder().unwrap();
         info!("getting all file ids and their full paths to start streaming the whole folder.");
         let files: Vec<FileDownload> =
-            fetch_all_file_ids_paths(&appstate.db_pool, folder.owner_id, folder.id)
-                .await
-                .inspect_err(|e| error!("{}", e))?;
+            fetch_all_file_ids_paths(&appstate.db_pool, folder.owner_id, folder.id).await?;
         stream_folder(
             appstate.rustfs_con.clone(),
             &folder.bucket_name(),

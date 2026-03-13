@@ -77,7 +77,8 @@ where
     .bind(obj_id)
     .bind(owner_id)
     .fetch_optional(con)
-    .await?;
+    .await
+    .inspect_err(|e| error!("failed to fetch {} info: {e}", kind))?;
 
     Ok(rec)
 }
@@ -99,7 +100,8 @@ pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResul
         .bind(&file.visibility)
         .bind(&file.checksum)
         .execute(con)
-        .await?)
+        .await
+        .inspect_err(|e| error!("failed to insert or update file: {e}"))?)
 }
 
 /// used to add a logical folder in database when user request to upload folder.
@@ -148,7 +150,7 @@ pub async fn is_obj_exists(
         .bind(name)
         .fetch_optional(con)
         .await
-        .inspect_err(|e| error!("{e}"))?)
+        .inspect_err(|e| error!("failed to query if {} exists: {e}", kind))?)
 }
 
 /// used to obtain all user file/folder ids for syncing purposes.
@@ -165,7 +167,8 @@ pub async fn fetch_all_user_object_ids(
     )
     .bind(owner_id)
     .fetch_all(con)
-    .await?)
+    .await
+    .inspect_err(|e| error!("failed to get all user object ids: {e}"))?)
 }
 /// used to modify/update the metadata field of a file.
 pub async fn update_file_metadata(
@@ -186,8 +189,10 @@ pub async fn update_file_metadata(
         owner_id
     )
     .fetch_optional(con)
-    .await?
-    .ok_or(DatabaseError::NotFound(anyhow!("update metadata faliled"))) // row didn't exist or wrong owner
+    .await
+    .inspect_err(|e| error!("failed to update file metadata: {e}"))?
+    .ok_or(DatabaseError::NotFound(anyhow!("update metadata faliled")))
+    .inspect_err(|e| error!("{e}")) // row didn't exist or wrong owner
     .map(|v| UpdateMetadata::new(v.metadata.unwrap_or(metadata)))
 }
 
@@ -324,7 +329,7 @@ pub async fn fetch_folder_children(
     .bind(f_id)
     .bind(owner_id)
     .fetch_all(con)
-    .await?)
+    .await.inspect_err(|e|error!("failed to get all folder children: {e}"))?)
 }
 /// used in sharing purposes to validate if a given object id is within the shared scooped token .
 pub async fn validate_object_ancestor<T>(
@@ -348,6 +353,8 @@ where
         .bind(grand_p_id)
         .fetch_optional(con)
         .await
-        .inspect_err(|e| error!("failed to execute validate child: {e}"))?;
+        .inspect_err(|e| {
+            error!("failed to execute validate child and obtain folder metadata and children : {e}")
+        })?;
     Ok(r)
 }

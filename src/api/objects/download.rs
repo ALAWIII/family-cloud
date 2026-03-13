@@ -28,7 +28,7 @@ use crate::{
 /// server -> checks if the user concurrent downloads was exceeded .
 ///
 /// server -> if owns(user_id,file_id) && ~ exceeded(user_id,x) then : generate(token,24h) -> user
-#[instrument(skip_all,err,fields(
+#[instrument(skip_all,fields(
     user_id=%claims.sub,
     user_ip=%addr.ip(),
     object_id=%f_id,

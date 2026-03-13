@@ -22,8 +22,7 @@ pub async fn list_objects(
     info!("sending all objects id's for user: {}", claims.sub);
     Ok(fetch_all_user_object_ids(&appstate.db_pool, claims.sub)
         .await
-        .map(Json)
-        .inspect_err(|e| error!("{}", e))?)
+        .map(Json)?)
 }
 #[instrument(skip_all,err(Display),fields(
     user_id=%claims.sub,
@@ -94,8 +93,7 @@ pub async fn update_metadata(
     Ok(
         update_file_metadata(&appstate.db_pool, claims.sub, f_id, metadata.metadata)
             .await
-            .map(Json)
-            .inspect_err(|e| error!("{}", e))?,
+            .map(Json)?,
     )
 }
 

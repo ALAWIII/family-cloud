@@ -23,7 +23,8 @@ pub async fn increment_storage_used_for_user(
         user_id
     )
     .execute(con)
-    .await?;
+    .await
+    .inspect_err(|e| error!("failed to increment storage for a user: {e}"))?;
     Ok(r.rows_affected())
 }
 /// used to update the upper bound of user maximum allowed storage.
@@ -38,7 +39,8 @@ pub async fn update_user_maximum_storage(
         user_id
     )
     .execute(con)
-    .await?;
+    .await
+    .inspect(|e| error!("failed to update user maximum storage: {e:?}"))?;
     Ok(r.rows_affected())
 }
 /// used to insert new user account with its own root folder.
@@ -134,7 +136,8 @@ pub async fn fetch_profile_info(
         user_id
     )
     .fetch_optional(con)
-    .await?;
+    .await
+    .inspect_err(|e| error!("failed to obtain user profile info: {e}"))?;
     Ok(v)
 }
 /// Check if email exists/verified and stored in database. (returns user_id)
@@ -159,7 +162,7 @@ pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
         .bind(user_id)
         .fetch_all(con)
         .await
-        .inspect_err(|e| error!("{e}"))?;
+        .inspect_err(|e| error!("failed to delete user with all its associated objects: {e}"))?;
     Ok(res.into_iter().filter_map(|v| v.id).collect())
 }
 /// searches for the user email by providing its id.
@@ -223,7 +226,8 @@ pub async fn update_account_username(
         user_id
     )
     .fetch_one(con)
-    .await?;
+    .await
+    .inspect_err(|e| error!("failed to update username: {e}"))?;
     Ok(v.username)
 }
 
@@ -238,5 +242,6 @@ pub async fn get_user_available_storage(
         user_id
     )
     .fetch_one(con)
-    .await?)
+    .await
+    .inspect_err(|e| error!("failed to fetch user storage info: {}", e))?)
 }

@@ -99,18 +99,14 @@ pub async fn upload(
         info!("creating new folder.");
         let folder = FolderRecord::new(claims.sub, Some(upq.parent_id), uphead.f_name);
         // if obj_kind is folder -> create the folder quickly -> grab the metadata store in database -> and return success
-        insert_folder(&appstate.db_pool, &folder)
-            .await
-            .inspect_err(|e| error!("{}", e))?;
+        insert_folder(&appstate.db_pool, &folder).await?;
         info!("folder created successfully.");
         return Ok((StatusCode::CREATED, folder).into_response());
     }
 
     //--------------- check the available space user have . space_used + content_length >= maximum_space -> reject the upload. ---------------
     info!("fetching user available storage to store new file.");
-    let s_info = get_user_available_storage(&appstate.db_pool, claims.sub)
-        .await
-        .inspect_err(|e| error!("{}", e))?;
+    let s_info = get_user_available_storage(&appstate.db_pool, claims.sub).await?;
     if s_info.storage_used_bytes + uphead.content_length.unwrap_or(0) > s_info.storage_quota_bytes {
         return Err(ApiError::ObjectTooLarge);
     }
@@ -122,8 +118,7 @@ pub async fn upload(
         &uphead.f_name,
         ObjectKind::File,
     )
-    .await
-    .inspect_err(|e| error!("{}", e))?
+    .await?
     {
         error!(file_id=%id,kind=%uphead.object_kind,file_name=uphead.f_name,"already existed and active in the database.");
         return Err(ApiError::Conflict);
@@ -135,9 +130,7 @@ pub async fn upload(
     file.mime_type(uphead.content_type.unwrap());
     file.checksum(&uphead.checksum.unwrap());
     file.status(crate::ObjectStatus::Uploading);
-    upsert_file(&appstate.db_pool, &file)
-        .await
-        .inspect_err(|e| error!("database inserting failed: {}", e))?;
+    upsert_file(&appstate.db_pool, &file).await?;
     let bucket = file.bucket_name();
     info!("creating new multipart upload session.");
     // if obj_kind is file -> open the body and start recive the stream of bytes for that file -> pipe directly to RustFS -> return metadata->store in database -> response success.
@@ -225,8 +218,7 @@ pub async fn upload(
         claims.sub,
         stream_result.file_size as i64,
     )
-    .await
-    .inspect_err(|e| error!("failed to increment storage for a user: {e}"))?;
+    .await?;
     info!("new file uploaded successfully.");
     Ok((StatusCode::CREATED, file).into_response())
 }

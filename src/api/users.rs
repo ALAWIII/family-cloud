@@ -31,8 +31,7 @@ async fn user_profile(
     State(appstate): State<AppState>,
 ) -> Result<Json<UserProfile>, ApiError> {
     let user_info = fetch_profile_info(&appstate.db_pool, claims.sub)
-        .await
-        .inspect_err(|e| error!("failed to obtain user profile info: {e}"))?
+        .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(user_info))
 }
@@ -52,9 +51,8 @@ async fn update_user_username(
             username.user_name
         )));
     }
-    let db_result = update_account_username(&appstate.db_pool, claims.sub, &username.user_name)
-        .await
-        .inspect_err(|e| error!("failed to update username: {e}"))?;
+    let db_result =
+        update_account_username(&appstate.db_pool, claims.sub, &username.user_name).await?;
     username.user_name = db_result;
     Ok(Json(username))
 }

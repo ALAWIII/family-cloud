@@ -256,10 +256,7 @@ async fn copy_file_rustfs(
         job.record.new_file_id,
         job.record.new_parent_folder_id,
     ) // marks the destination file as active !
-    .await
-    .inspect_err(|e| {
-        error!("failed to set active status or to decrement folder copy counter: {e}")
-    })?;
+    .await?;
     debug!("job copying success.");
     Ok(())
 }

@@ -110,8 +110,7 @@ async fn access_object(
         .map(|v| {
             v.ok_or(ApiError::Forbidden)
                 .inspect_err(|e| error!("access folder is unauthorized: {e}"))
-        })
-        .inspect_err(|e| error!("failed to obtain folder metadata and children: {e}"))??
+        })?
         .into_response()
     } else {
         info!("requested metadata for sub-file");
@@ -126,8 +125,7 @@ async fn access_object(
         .map(|v| {
             v.ok_or(ApiError::Forbidden)
                 .inspect_err(|e| error!("access file is unauthorized: {e}"))
-        })
-        .inspect_err(|e| error!("failed to obtain file metadata: {e}"))??
+        })?
         .into_response()
     };
     info!("fetching metadata success.");
