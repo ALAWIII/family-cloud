@@ -544,7 +544,7 @@ impl AccessQuery {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct UserStorageInfo {
     pub storage_quota_bytes: i64,
     pub storage_used_bytes: i64,

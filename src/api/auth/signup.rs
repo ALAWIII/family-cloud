@@ -1,18 +1,21 @@
 use crate::{
-    ApiError, AppState, CloudCommand, CommandBus, CryptoError, DatabaseError, EmailError,
-    EmailSender, FolderRecord, PendingAccount, SignupRequest, TokenPayload, User, create_redis_key,
+    ApiError, AppState, CryptoError, DatabaseError, EmailError, EmailSender, FolderRecord,
+    PendingAccount, RustFSError, SignupRequest, TokenPayload, User, create_redis_key,
     create_user_bucket, decode_token, delete_account_db, delete_token_from_redis,
     deserialize_content, encode_token, fetch_redis_data, generate_token_bytes, get_redis_con,
     hash_password, hash_token, insert_user_with_root_folder, is_account_exist, serialize_content,
     store_token_redis, verification_body,
 };
 
+use aws_sdk_s3::Client;
 use axum::{
     Json, debug_handler,
     extract::{Query, State},
     http::status::StatusCode,
 };
+use ironsaga::{IronSagaAsync, ironcmd};
 use secrecy::ExposeSecret;
+use sqlx::PgPool;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
 
@@ -130,56 +133,37 @@ pub async fn verify_signup(
         account.password_hash,
     );
     let user_id = user.id;
+    let pool = appstate.db_pool.clone();
     info!("starting new atomic transaction.");
-    let mut bus_commands = CommandBus::default();
+    let mut bus = IronSagaAsync::default();
     debug!("creating the inserting account command.");
-    let in_user = {
-        let pool = appstate.db_pool.clone();
-        move || {
-            let pool = pool.clone();
-            let user = user.clone();
-            async move {
-                info!("creating root folder and inserting it with new user.");
-                let folder = FolderRecord::new(user.id, None, "".into());
-                insert_user_with_root_folder(&user, &folder, &pool)
-                    .await
-                    .map_err(|e| match e {
-                        DatabaseError::Duplicate => ApiError::Conflict,
-                        other => ApiError::Database(other),
-                    })
-            }
-        }
-    };
-    let c_user_b = {
-        move || {
-            let rfs_con = appstate.rustfs_con.clone();
-            async move {
-                info!("creating user bucket in RustFS.");
-                create_user_bucket(&rfs_con, &user_id.to_string())
-                    .await
-                    .map_err(ApiError::RustFs)
-            }
-        }
-    };
-    let d_account = {
-        move || {
-            let db_con = appstate.db_pool.clone();
-            async move {
-                info!(id = %user_id, "rollback deleting account.");
-                delete_account_db(&db_con, user_id)
-                    .await
-                    .map(|_| ())
-                    .map_err(Into::into) // convert to anyhow::Error
-            }
-        }
-    };
-    debug!("adding signup commands.");
-    bus_commands.add_command(CloudCommand::from_fns(in_user, d_account));
-    bus_commands.add_command(CloudCommand::from_fns(c_user_b, || async { Ok(()) })); // if this fail it will rollback and invoke d_account by iterating from index=0;
+    let mut user_insertion = InsertUserCmd::new(&user, &pool); // if this fail it will rollback and invoke d_account by iterating from index=0;
+    let account_delete_rollback = DeleteAccountCmd::new(&pool, user_id);
+    user_insertion.set_rollback(account_delete_rollback);
+    let bucket_cr = CreateBucketCmd::new(&appstate.rustfs_con, user_id);
     info!("executing transaction");
-    bus_commands.execute().await?;
+    bus.add_command(user_insertion);
+    bus.add_command(bucket_cr);
+    _ = bus.execute_all().await;
     info!("deleting or invalidating the signup verification token from redis");
     delete_token_from_redis(&mut redis_con, &key).await?;
     info!("successfully verifing new account signup.");
     Ok(StatusCode::CREATED)
+}
+
+#[ironcmd(result)]
+async fn insert_user_cmd<'a, 'c>(user: &'a User, db_pool: &'c PgPool) -> Result<(), DatabaseError> {
+    info!("creating root folder and inserting it with new user.");
+    let folder = FolderRecord::new(user.id, None, "".into());
+    insert_user_with_root_folder(user, &folder, db_pool).await
+}
+#[ironcmd(result)]
+async fn delete_account_cmd<'a>(con: &'a PgPool, user_id: Uuid) -> Result<(), DatabaseError> {
+    delete_account_db(con, user_id).await.map(|_| ())
+}
+
+#[ironcmd(result)]
+async fn create_bucket_cmd<'a>(rfs_con: &'a Client, user_id: Uuid) -> Result<(), RustFSError> {
+    let id = user_id.to_string();
+    create_user_bucket(rfs_con, &id).await
 }

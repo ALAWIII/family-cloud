@@ -1939,6 +1939,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "ironsaga",
  "itertools",
  "jsonwebtoken",
  "lettre",
@@ -2869,6 +2870,29 @@ checksum = "c91338f0783edbd6195decb37bae672fd3b165faffb89bf7b9e6942f8b1a731a"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "ironsaga"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64044492773fec7ecb832e1c2e0e97581c8c4545cae3cf4d2e1e5bd4d0cecdd2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ironsaga-macros",
+]
+
+[[package]]
+name = "ironsaga-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a81a885ca9675d959119fd8922d0943286734f603897d26e73f101361d97d1fe"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]

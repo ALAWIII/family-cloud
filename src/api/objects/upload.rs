@@ -1,11 +1,10 @@
 use crate::{
-    ApiError, AppState, Claims, FileRecord, FolderRecord, ObjectKind, ObjectStatus, RustFSError,
-    get_user_available_storage, increment_storage_used_for_user, insert_folder, is_obj_exists,
-    upsert_file, validate_display_name,
+    ApiError, AppState, Claims, DatabaseError, FileRecord, FolderRecord, ObjectKind, ObjectStatus,
+    RustFSError, UserStorageInfo, get_user_available_storage, increment_storage_used_for_user,
+    insert_folder, is_obj_exists, upsert_file, validate_display_name,
 };
 use anyhow::anyhow;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::operation::complete_multipart_upload::CompleteMultipartUploadOutput;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use axum::body::Bytes;
 use axum::extract::Query;
@@ -24,18 +23,19 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use futures::future::join_all;
 
-use sha2::{Digest, Sha256};
-use sqlx::PgPool;
-use uuid::Uuid;
-
+use ironsaga::{IronSagaAsync, ironcmd};
 use mime_guess::mime;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::bytes::BytesMut;
 use tracing::{debug, error, info, instrument};
+use uuid::Uuid;
 
 const PART_SIZE: usize = 5 * 1024 * 1024;
 const MAX_CONCURRENT_UPLOADS: usize = 4;
@@ -122,10 +122,9 @@ pub async fn upload(
     //-------------------------- update object metadata ----------------------
     info!("preparing new file object instance with metadata.");
     let mut file = FileRecord::new(claims.sub, upq.parent_id, uphead.f_name);
+    let f_id = file.id;
     file.mime_type(uphead.content_type.unwrap());
-    file.checksum(&uphead.checksum.unwrap());
-    file.status(crate::ObjectStatus::Uploading);
-    upsert_file(&appstate.db_pool, &file).await?;
+    file.checksum(uphead.checksum.as_ref().unwrap());
     let bucket = file.bucket_name();
     info!("creating new multipart upload session.");
     // if obj_kind is file -> open the body and start recive the stream of bytes for that file -> pipe directly to RustFS -> return metadata->store in database -> response success.
@@ -136,86 +135,44 @@ pub async fn upload(
 
     // ---------------------- streaming the file
     info!("start streaming the file to RustFS object storage.");
-    let (completed_parts, stream_result) =
-        match stream_file_rustfs_parallel(&appstate.rustfs_con, body, &bucket, file.id, &upload_id)
-            .await
-            .inspect_err(|e| error!("{}", e))
-        {
-            Ok(r) => r,
-            Err(e) => {
-                info!("aborting the upload.");
-                abort_and_cleanup(
-                    &appstate.db_pool,
-                    &appstate.rustfs_con,
-                    &mut file,
-                    &bucket,
-                    &upload_id,
-                )
-                .await?;
-                return Err(e.into());
-            }
-        };
-    info!("validate checksum.");
-    if Some(&stream_result.checksum) != file.checksum.as_ref() {
-        error!(
-            expected = ?file.checksum,
-            actual = stream_result.checksum,
-            "checksum mismatch"
-        );
-        abort_and_cleanup(
-            &appstate.db_pool,
-            &appstate.rustfs_con,
-            &mut file,
-            &bucket,
-            &upload_id,
-        )
-        .await?;
-        return Err(ApiError::ChecksumMismatch); // 422 unproccessible entity
-    }
-    info!("check real usage of file.");
-    if s_info.storage_used_bytes + stream_result.file_size as i64 > s_info.storage_quota_bytes {
-        abort_and_cleanup(
-            &appstate.db_pool,
-            &appstate.rustfs_con,
-            &mut file,
-            &bucket,
-            &upload_id,
-        )
-        .await?;
-        return Err(ApiError::ObjectTooLarge);
-    }
+    let mut bus = IronSagaAsync::default();
+    let mut up_ctx = UploadContext::default();
+    up_ctx.file = Some(file);
+    let upctx = Arc::new(Mutex::new(up_ctx));
+    let mut tmp_cmd = TempCmd::new();
+    let abort_upload_rb = AbortUpload::new(&appstate.rustfs_con, &bucket, f_id, &upload_id);
+    tmp_cmd.set_rollback(abort_upload_rb);
+    let stream_cmd = StreamFileRustfs::new(
+        appstate.rustfs_con.clone(),
+        body,
+        &upload_id,
+        s_info,
+        upctx.clone(),
+    );
+
     debug!("commiting and validating the uploaded file.");
     // Complete upload
-    let metadata = complete_upload(
-        &appstate.rustfs_con,
-        &bucket,
-        &file.id.to_string(),
-        &upload_id,
-        completed_parts,
-    ) // we can use abort_on_cleanup if error!
-    .await?;
-    //--------------------- ask rustfs to complement the metadata of the object, sets (last_modified,etag,size)------------------
-    info!("update object metadata with etag RustFS.");
-    file.etag(metadata.e_tag().unwrap_or(""));
-    file.last_modified(Utc::now());
-    file.size(stream_result.file_size as i64);
-    file.status(ObjectStatus::Active);
-
-    //-------- insert the object(file) information into the database-----------------------
-    info!("updating file metadata info in database.");
-    // if this fails → file exists in RustFS but DB not updated
-    // not critical — can be reconciled later, or add delete_object fallback
-    upsert_file(&appstate.db_pool, &file)
-        .await
-        .inspect_err(|e| error!("database updating metadata failed: {}", e))?;
-    increment_storage_used_for_user(
-        &appstate.db_pool,
-        claims.sub,
-        stream_result.file_size as i64,
-    )
-    .await?;
+    let mut c_up = CompleteUpload::new(&appstate.rustfs_con, &upload_id, upctx.clone());
+    let del_f_rfs_rb = DeleteFileRustfs::new(&appstate.rustfs_con, upctx.clone());
+    c_up.set_rollback(del_f_rfs_rb);
+    let mut ins_f = InsertFileDb::new(&appstate.db_pool, upctx.clone());
+    let de_f_rb = DeleteFileDb::new(&appstate.db_pool, upctx.clone());
+    ins_f.set_rollback(de_f_rb);
+    let inc_cmd = IncrementStorage::new(&appstate.db_pool, claims.sub, upctx.clone());
+    bus.add_command(tmp_cmd);
+    bus.add_command(stream_cmd);
+    bus.add_command(c_up);
+    bus.add_command(ins_f);
+    bus.add_command(inc_cmd);
+    let rs = bus.execute_all().await;
+    let mut upctxl = upctx.lock().await;
+    if let Some(e) = upctxl.checksum_er.take().or(upctxl.exceed_quota.take()) {
+        return Err(e);
+    }
+    rs?;
     info!("new file uploaded successfully.");
-    Ok((StatusCode::CREATED, file).into_response())
+    let f = upctxl.file.take().unwrap();
+    Ok((StatusCode::CREATED, f).into_response())
 }
 
 /// extracts required and optional headers.
@@ -322,13 +279,16 @@ async fn create_multipart_upload(
 /// 4. body streams -> spawn_uploaders uses upload_single_part(part_x) -> collect_results.
 /// 5. collect_results is_failure ? abort the whole upload, otherwise when all parts are streamed with OK pass.
 /// 6. complete_upload with a list of sorted success uploaded parts.
-pub async fn stream_file_rustfs_parallel(
-    client: &Client,
+#[ironcmd(result)]
+pub async fn stream_file_rustfs<'a>(
+    client: Client,
     body: Body,
-    bucket: &str,
-    key: Uuid, // file_id = object key in Rustfs
-    upload_id: &str,
-) -> Result<(Vec<CompletedPart>, StreamResult), RustFSError> {
+    upload_id: &'a str,
+    s_info: UserStorageInfo,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> Result<(), ApiError> {
+    let mut ctx = upctx.lock().await;
+    let f = ctx.file.as_mut().unwrap();
     debug!("initalizing Parts communicating channels.");
     let (part_tx, part_rx) = mpsc::channel::<PartToUpload>(10);
     let (result_tx, result_rx) = mpsc::channel::<Result<CompletedPart, RustFSError>>(10);
@@ -336,8 +296,8 @@ pub async fn stream_file_rustfs_parallel(
     // Spawn parallel uploaders
     let uploader_handle = spawn_uploaders(
         client.clone(),
-        bucket.to_string(),
-        key.to_string(),
+        f.bucket_name(),
+        f.key(),
         upload_id.to_string(),
         part_rx,
         result_tx.clone(),
@@ -358,7 +318,26 @@ pub async fn stream_file_rustfs_parallel(
         .map_err(|e| RustFSError::Upload(anyhow!("stream_body error: {}", e)))??;
     let _ = uploader_handle.await;
 
-    Ok((completed_parts, stream_result))
+    info!("validate checksum.");
+    if let Some(c) = f.checksum.as_ref()
+        && &stream_result.checksum != c
+    {
+        error!(
+            expected = c,
+            actual = stream_result.checksum,
+            "checksum mismatch"
+        );
+        ctx.checksum_er = Some(ApiError::ChecksumMismatch);
+        return Err(ApiError::ChecksumMismatch); // 422 unproccessible entity
+    }
+    info!("check real usage of file.");
+    if s_info.storage_used_bytes + stream_result.file_size as i64 > s_info.storage_quota_bytes {
+        ctx.exceed_quota = Some(ApiError::ObjectTooLarge);
+        return Err(ApiError::ObjectTooLarge);
+    }
+    f.size(stream_result.file_size as i64);
+    ctx.completed_part = Some(completed_parts);
+    Ok(())
 }
 
 /// # ===== Stream body and buffer into parts =====
@@ -535,38 +514,43 @@ async fn upload_single_part(
 }
 
 /// ===== Complete multipart upload, commits the uploaded file to RustFS.=====
-async fn complete_upload(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-    upload_id: &str,
-    completed_parts: Vec<CompletedPart>,
-) -> Result<CompleteMultipartUploadOutput, RustFSError> {
+#[ironcmd(result)]
+async fn complete_upload<'a>(
+    client: &'a Client,
+    upload_id: &'a str,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> Result<(), RustFSError> {
+    let mut upctxl = upctx.lock().await;
     let completed = CompletedMultipartUpload::builder()
-        .set_parts(Some(completed_parts))
+        .set_parts(upctxl.completed_part.take())
         .build();
+    let f = upctxl.file.as_mut().unwrap();
 
     let metadata_output = client
         .complete_multipart_upload()
-        .bucket(bucket)
-        .key(key)
+        .bucket(f.bucket_name())
+        .key(f.key())
         .upload_id(upload_id)
         .multipart_upload(completed)
         .send()
         .await
         .map_err(|e| RustFSError::Upload(anyhow!("Complete upload failed: {}", e)))
         .inspect_err(|e| error!("{}", e))?;
-
-    Ok(metadata_output)
+    info!("update object metadata with etag RustFS.");
+    f.etag(metadata_output.e_tag.unwrap_or_default());
+    f.last_modified(Utc::now());
+    f.status(ObjectStatus::Active);
+    Ok(())
 }
 
 /// ===== Abort multipart upload on error =====
 /// - cleans any unfinshed upload on failure.
-async fn abort_upload(
-    client: &Client,
-    bucket: &str,
+#[ironcmd(result)]
+async fn abort_upload<'a, 'b, 'c>(
+    client: &'a Client,
+    bucket: &'b str,
     f_id: Uuid,
-    upload_id: &str,
+    upload_id: &'c str,
 ) -> Result<(), RustFSError> {
     client
         .abort_multipart_upload()
@@ -579,20 +563,72 @@ async fn abort_upload(
 
     Ok(())
 }
+#[ironcmd(result)]
+async fn insert_file_db<'a>(
+    db_pool: &'a PgPool,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> Result<(), DatabaseError> {
+    let mut upctxl = upctx.lock().await;
+    let f = upctxl.file.as_mut().unwrap();
 
-async fn abort_and_cleanup(
-    db: &PgPool,
-    client: &Client,
-    file: &mut FileRecord,
-    bucket: &str,
-    upload_id: &str,
-) -> Result<(), ApiError> {
-    file.status(ObjectStatus::Deleted);
-    upsert_file(db, file)
+    //-------- insert the object(file) information into the database-----------------------
+    info!("updating file metadata info in database.");
+    // if this fails → file exists in RustFS but DB not updated
+    // not critical — can be reconciled later, or add delete_object fallback
+    upsert_file(db_pool, f)
         .await
-        .inspect_err(|e| error!("db update failed on abort: {}", e))?;
-    abort_upload(client, bucket, file.id, upload_id)
+        .inspect_err(|e| error!("database updating metadata failed: {}", e))?;
+
+    Ok(())
+}
+#[ironcmd(result)]
+async fn delete_file_db<'a>(
+    db_pool: &'a PgPool,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> Result<(), DatabaseError> {
+    info!("delete file because of unexpected failure.");
+    let mut upctxl = upctx.lock().await;
+    let f = upctxl.file.as_mut().unwrap();
+    f.status(ObjectStatus::Deleted);
+    upsert_file(db_pool, f)
         .await
-        .inspect_err(|e| error!("abort upload failed: {}", e))?;
+        .inspect_err(|e| error!("database marking file as deleted failed: {}", e))?;
+    Ok(())
+}
+
+#[ironcmd]
+async fn temp_cmd() {}
+#[derive(Default)]
+struct UploadContext {
+    pub completed_part: Option<Vec<CompletedPart>>,
+    pub checksum_er: Option<ApiError>,
+    pub exceed_quota: Option<ApiError>,
+    pub file: Option<FileRecord>,
+}
+
+#[ironcmd(result)]
+async fn increment_storage<'a>(
+    con: &'a PgPool,
+    user_id: Uuid,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> Result<(), DatabaseError> {
+    let upctxl = upctx.lock().await;
+    increment_storage_used_for_user(con, user_id, upctxl.file.as_ref().unwrap().size).await?;
+    Ok(())
+}
+
+#[ironcmd(result)]
+async fn delete_file_rustfs<'a>(
+    rfs_con: &'a Client,
+    upctx: Arc<Mutex<UploadContext>>,
+) -> anyhow::Result<()> {
+    let up = upctx.lock().await;
+    let f = up.file.as_ref().unwrap();
+    rfs_con
+        .delete_object()
+        .bucket(f.bucket_name())
+        .key(f.key())
+        .send()
+        .await?;
     Ok(())
 }
