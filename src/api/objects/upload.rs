@@ -136,8 +136,11 @@ pub async fn upload(
     // ---------------------- streaming the file
     info!("start streaming the file to RustFS object storage.");
     let mut bus = IronSagaAsync::default();
-    let mut up_ctx = UploadContext::default();
-    up_ctx.file = Some(file);
+    let up_ctx = UploadContext {
+        file: Some(file),
+        ..Default::default()
+    };
+
     let upctx = Arc::new(Mutex::new(up_ctx));
     let mut tmp_cmd = TempCmd::new();
     let abort_upload_rb = AbortUpload::new(&appstate.rustfs_con, &bucket, f_id, &upload_id);
