@@ -1,7 +1,5 @@
 mod auth;
 mod utils;
-use std::{net::SocketAddr, time::Duration};
-mod metadata;
 use aws_sdk_s3::Client;
 use axum::{body::Bytes, extract::connect_info::MockConnectInfo};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -9,16 +7,11 @@ use family_cloud::{
     FileRecord, FolderRecord, LoginResponse, TokenOptions, WorkersName, create_user_bucket,
     get_rustfs, init_apalis, init_tracing,
 };
+use std::{net::SocketAddr, time::Duration};
 
 use sqlx::{PgPool, Row};
 pub use utils::*;
-mod copy;
-mod delete;
-mod download;
-mod move_obj;
-mod share;
-mod storage;
-mod upload;
+mod objects;
 mod users;
 use axum::http::header::CONTENT_LENGTH;
 // ============================================================================
