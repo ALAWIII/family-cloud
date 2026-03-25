@@ -32,6 +32,19 @@ local token = redis.call('HGET', KEYS[1], KEYS[2])
    end
 "#;
 
+/// Resolves metadata access via a public share token by:
+/// 1. Validating optional access parameters (`AccessQuery::validate`) and
+///    loading the root shared object from Redis using the token key,
+///    failing with `Forbidden` if missing or unreadable.
+/// 2. Deserializing the stored `FileSystemObject` and immediately returning
+///    file metadata when the shared object itself is a file.
+/// 3. For shared folders, interpreting optional child id + kind parameters
+///    and using `validate_object_ancestor` to ensure the requested
+///    file/folder is a descendant of the shared root and owned by the same
+///    user.
+/// 4. Returning the resolved `FolderShared` or `FileShared` metadata as an
+///    HTTP response, or `Forbidden` when the requested child is not within
+///    the shared subtree.
 #[instrument(skip_all,fields(
     token=%token,
     access_params=?access_params
@@ -101,7 +114,17 @@ pub async fn access_object(
     info!("fetching metadata success.");
     Ok(response)
 }
-
+/// Creates or refreshes a share link token for a user‑owned file or folder by:
+/// 1. Validating the requested TTL is positive, rejecting zero or negative
+///    values as bad requests.
+/// 2. Looking up an existing share token for the given object id in Redis
+///    via a Lua script (`CHECK_AND_SET`) that both returns an existing token
+///    and extends its TTL when present.
+/// 3. When no existing token is found, delegating to `create_share_token` to
+///    fetch the object metadata, generate a new token, and store the mapping
+///    in Redis.
+/// 4. Returning the active token (new or reused) in a `SharedTokenResponse`
+///    so clients can construct share URLs.
 #[debug_handler]
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
@@ -152,7 +175,22 @@ pub async fn create_link_share(
     info!("success creating/updating shared token.");
     Ok(Json(SharedTokenResponse { token }))
 }
-
+/// Helper that creates a brand‑new share token and persists its metadata in
+/// Redis by:
+/// 1. Fetching the target file or folder from Postgres (`fetch_obj_info`)
+///    for the given user, returning `NotFound` if it does not exist or is
+///    not owned by them.
+/// 2. Generating a fresh UUID share token and building the Redis key for
+///    that token.
+/// 3. Serializing the `FileSystemObject` representation of the target so it
+///    can later be used by access and streaming endpoints.
+/// 4. Executing an atomic Redis pipeline that:
+///    - Stores the token → object mapping with an expiry (`set_ex`).
+///    - Records the object id → token mapping in the per‑user hash
+///      (`HSET user_shares_key f_id token`).
+///    - Applies a TTL to that specific hash field (`HEXPIRE`) so it expires
+///      in sync with the token.
+/// 5. Returning the token string for use in responses.
 async fn create_share_token(
     f_info: SharedObjectReq,
     db_pool: &PgPool,

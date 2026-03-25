@@ -15,6 +15,14 @@ use crate::{
     store_token_redis, update_account_email,
 };
 
+/// Handles a request to change the user’s email by validating that the new
+/// address is not already in use, capturing the current email from the
+/// authenticated user’s claims, and generating a short‑lived verification
+/// token. It stores a `UserVerification` payload in Redis keyed by the hashed
+/// token, then sends a cancel link to the old email and a confirm link to the
+/// new email so the user can either approve or cancel the change. On success,
+/// it returns 202 Accepted, indicating that the change is pending email
+/// confirmation.
 #[debug_handler]
 #[instrument(skip_all,fields(new_email=email_info.email))]
 pub async fn change_email(
@@ -110,7 +118,12 @@ pub async fn change_email(
     info!("change email request success.");
     Ok(StatusCode::ACCEPTED)
 }
-
+/// Finalizes a pending email change by validating the verification token
+/// received as a query parameter and resolving the associated
+/// `UserVerification` data from Redis. If valid, it updates the user’s email
+/// in the database, checks that exactly one row was affected, and deletes the
+/// token from Redis to prevent reuse, returning 200 OK on success; invalid or
+/// missing tokens result in an authorization or not‑found style error.
 #[instrument(skip_all)]
 pub async fn verify_change_email(
     State(appstate): State<AppState>,
@@ -147,7 +160,11 @@ pub async fn verify_change_email(
     info!("verification success.");
     Ok(StatusCode::OK)
 }
-
+/// Cancels a pending email change by accepting a cancel token from the query
+/// string, decoding and hashing it to derive the Redis key, and deleting the
+/// stored email‑change entry. If a token was actually removed, the cancellation
+/// succeeds with 200 OK; otherwise, it returns a bad‑request error indicating
+/// an invalid or already used cancel token.
 #[instrument(skip_all)]
 pub async fn cancel_change_email(
     State(appstate): State<AppState>,

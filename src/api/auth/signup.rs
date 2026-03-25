@@ -29,9 +29,12 @@ fn create_pending_account(signup_info: &SignupRequest) -> Result<PendingAccount,
     Ok(pending_account)
 }
 
-/// if email_exist is true then send an email message to tell him that his email is already signup and the token must be used to reset password if he wants too
-///
-/// if email_exist is false then send a verfication message ask him to click the url inside the email message to verify his signup within 5 minutes
+/// Handles user signup requests by validating email uniqueness, creating a
+/// short‑lived pending account, generating and storing a signed verification
+/// token in Redis, and sending an email with a verification link. On success,
+/// it always returns 200 to avoid leaking whether the email is already
+/// registered, leaving actual account creation to the separate verification
+/// endpoint.
 #[debug_handler]
 #[instrument(skip_all,fields(
     user_name=signup_info.username,
@@ -44,19 +47,21 @@ pub async fn signup(
     info!("signup new account.");
     let user_id = is_account_exist(&appstate.db_pool, &signup_info.email).await?; // sqlx database error
     if user_id.is_some() {
+        // check if email already is used by some accounts.
         info!("The email address already uesed by some existing accounts.");
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         return Ok(StatusCode::OK);
     }
     //---------------------------------------------------------------
+    // using provided secret to generate token.
     let secret = appstate.settings.secrets.hmac.expose_secret();
+    // asserting if the master email not persist , so that we cant send verification emails to newly signed up users!
     let from_sender = appstate
         .settings
         .email
         .ok_or(EmailError::ClientNotInitialized)?
         .from_sender;
     let app_url = appstate.settings.app.url();
-    // if email is new
 
     info!("generating new verfication token and hash it.");
 
@@ -65,7 +70,7 @@ pub async fn signup(
     let hashed_token = hash_token(&token, secret)?; // store in redis database
     let pending_account = create_pending_account(&signup_info)?;
 
-    info!("creating the signup verification body for email message");
+    info!("creating the signup verification body for email message.");
 
     let email_body = verification_body(
         &signup_info.username,
@@ -85,7 +90,7 @@ pub async fn signup(
     )
     .await?;
     //-------------------------
-    info!("sending signup email verfication to the email recipent");
+    info!("sending signup email verfication to the email recipent.");
     EmailSender::default()
         .from_sender(from_sender)
         .email_recipient(signup_info.email)
@@ -101,6 +106,11 @@ pub async fn signup(
     Ok(StatusCode::OK)
 }
 
+/// Handles verification of signup tokens by decoding the token from the query,
+/// resolving the associated pending account from Redis, and promoting it to a
+/// fully provisioned user. On success, it creates the user with a root folder,
+/// provisions the user’s storage bucket using a saga to keep side effects
+/// consistent, invalidates the token, and responds with 201 Created.
 #[debug_handler]
 #[instrument(skip_all)]
 pub async fn verify_signup(
@@ -137,10 +147,10 @@ pub async fn verify_signup(
     info!("starting new atomic transaction.");
     let mut bus = IronSagaAsync::default();
     debug!("creating the inserting account command.");
-    let mut user_insertion = InsertUserCmd::new(&user, &pool); // if this fail it will rollback and invoke d_account by iterating from index=0;
+    let mut user_insertion = InsertUserCmd::new(&user, &pool);
     let account_delete_rollback = DeleteAccountCmd::new(&pool, user_id);
     user_insertion.set_rollback(account_delete_rollback);
-    let bucket_cr = CreateBucketCmd::new(&appstate.rustfs_con, user_id);
+    let bucket_cr = CreateBucketCmd::new(&appstate.rustfs_con, user_id); // if this fail it will rollback and invoke account_delete_rollback by iterating from index=0;
     info!("executing transaction");
     bus.add_command(user_insertion);
     bus.add_command(bucket_cr);

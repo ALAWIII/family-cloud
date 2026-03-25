@@ -8,7 +8,13 @@ use crate::{
     decode_token, deserialize_content, extract_refresh_token, fetch_redis_data, get_redis_con,
     hash_token,
 };
-/// responsible for generating new jwt access tokens as a response
+/// Handles issuing a new JWT access token from a valid refresh token supplied
+/// via cookies(for web clients) or request body(for mobile/desktop clients).
+/// It extracts and decodes the refresh token,
+/// hashes it to build the Redis lookup key, and loads the associated user
+/// payload from Redis. If the refresh token is valid, it mints a new
+/// short‑lived JWT access token using the stored payload and returns it in a
+/// JSON `TokenPayload` response; otherwise, it fails with `Unauthorized`.
 #[debug_handler]
 #[instrument(skip_all)]
 pub async fn refresh_token(

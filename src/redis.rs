@@ -7,6 +7,11 @@ use uuid::Uuid;
 
 static REDIS_POOL: OnceLock<RPool> = OnceLock::new();
 
+/// Initializes a global Redis connection pool once by:
+/// 1. Building a `deadpool_redis::Pool` from `RedisConfig` with max size,
+///    timeout, and Tokio runtime.
+/// 2. Storing it in a `OnceLock<RPool>`, returning
+///    `CRedisError::PoolAlreadyInitialized` if called more than once.
 #[instrument(skip_all,fields(
     init_id=%Uuid::new_v4(),
     redis_host = %rds_conf.host,
@@ -31,6 +36,8 @@ pub async fn init_redis_pool(rds_conf: &RedisConfig) -> Result<(), CRedisError> 
     debug!("Redis pool initialized successfully");
     Ok(())
 }
+/// Returns a clone of the globally initialized Redis pool, or
+/// `CRedisError::PoolNotInitialized` if `init_redis_pool` has not run yet.
 pub fn get_redis_pool() -> Result<RPool, CRedisError> {
     debug!("Retrieving Redis pool from static storage");
     REDIS_POOL
@@ -39,6 +46,8 @@ pub fn get_redis_pool() -> Result<RPool, CRedisError> {
         .inspect_err(|e| error!("failed to get redis pool: {}", e))
         .cloned()
 }
+/// Acquires a single Redis `Connection` from the given pool, mapping pool
+/// acquisition failures into `CRedisError::Connection`.
 pub async fn get_redis_con(pool: &RPool) -> Result<Connection, CRedisError> {
     debug!("Acquiring Redis connection from pool");
     Ok(pool
@@ -47,7 +56,10 @@ pub async fn get_redis_con(pool: &RPool) -> Result<Connection, CRedisError> {
         .inspect_err(|e| error!("Failed to acquire Redis connection: {}", e))?)
 }
 
-/// accepts key_token an hmac hashed version of the raw token , ttl (seconds) is the time to set to expire the entry in database
+/// Stores a serialized token payload in Redis with a TTL by:
+/// 1. Writing `serialized_content` under `key_token` using `SETEX`.
+/// 2. Setting expiry to `ttl` seconds so verification tokens are
+///    automatically removed after their lifetime.
 pub async fn store_token_redis(
     conn: &mut Connection,
     key_token: &str,
@@ -60,9 +72,8 @@ pub async fn store_token_redis(
         .inspect_err(|e| error!("Failed to store token in Redis: {}", e))?; // Can fail Redis op , converted to CRedisError::Connection
     Ok(())
 }
-/// checks whether a token still exists in redis or not.
-///
-/// true: exists , false: does not exists
+/// Checks whether a given token key exists in Redis, returning `true` if
+/// present and `false` otherwise, using the `EXISTS` command.
 pub async fn is_token_exist(con: &mut Connection, hashed_token: &str) -> Result<bool, CRedisError> {
     debug!("Checking if token exists in Redis");
     Ok(con
@@ -71,7 +82,9 @@ pub async fn is_token_exist(con: &mut Connection, hashed_token: &str) -> Result<
         .inspect_err(|e| error!("Failed to check token existence: {}", e))?)
 }
 
-/// Retrieves verification data for token from Redis
+/// Retrieves the raw serialized value associated with a token key from
+/// Redis using `GET`, returning `Ok(Some(String))` when found or
+/// `Ok(None)` when no entry exists.
 pub async fn fetch_redis_data(
     con: &mut Connection,
     key_token: &str,
@@ -82,7 +95,9 @@ pub async fn fetch_redis_data(
         .await
         .inspect_err(|e| error!("Failed to retrieve verification data: {}", e))?)
 }
-/// Deletes token from Redis
+/// Deletes a token key from Redis using `DEL` and returns the number of
+/// keys removed (0 if already missing), so callers can detect invalid or
+/// reused tokens.
 pub async fn delete_token_from_redis(
     con: &mut Connection,
     hashed_token: &str,

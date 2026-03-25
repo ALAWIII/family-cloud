@@ -26,7 +26,9 @@ use crate::{
 type HmacSha256 = Hmac<Sha256>;
 
 //----------------------------------------------tokens generating, securing and encoding/decoding
-/// accepts number of bytes , len=32 , bits = len*8 = 256-bit token
+/// Generates a cryptographically secure random token of `len` bytes
+/// (e.g., 32 bytes = 256 bits) using the OS RNG, returning the raw byte
+/// buffer for further encoding or hashing.
 pub fn generate_token_bytes(len: usize) -> Result<Vec<u8>, CryptoError> {
     debug!("Generating {} bytes of random token data", len);
     let mut buf = vec![0u8; len];
@@ -38,13 +40,15 @@ pub fn generate_token_bytes(len: usize) -> Result<Vec<u8>, CryptoError> {
     Ok(buf)
 }
 
-/// URL-safe base64 encode token for transport (cookies, links, headers) to alphenumeric text.
+/// Encodes raw token bytes into a URL‑safe base64 string (no padding),
+/// suitable for use in URLs, cookies, and headers.
 pub fn encode_token(token: &[u8]) -> String {
     debug!("Encoding {} bytes to base64url", token.len());
     URL_SAFE_NO_PAD.encode(token)
 }
 
-/// Decode token from URL-safe base64 (incoming from client) to array of bytes.
+/// Decodes a URL‑safe base64 token string back into raw bytes, returning
+/// a `CryptoError::TokenDecode` on malformed input.
 pub fn decode_token(encoded: &str) -> Result<Vec<u8>, CryptoError> {
     debug!("Decoding base64url string (len={}) to bytes", encoded.len());
     //CryptoError::TokenDecode
@@ -52,11 +56,9 @@ pub fn decode_token(encoded: &str) -> Result<Vec<u8>, CryptoError> {
         .decode(encoded)
         .inspect_err(|e| error!("Base64 decoding failed: {}", e))?)
 }
-
-/// accepts a decoded token as bytes and returns a hashed version of it.
-/// accepts a token bytes and a global secret  to create a strong hashed token
-///
-/// the hashed token used to be stored in redis database for account verfication and authentication purposes
+/// Derives a hex‑encoded HMAC‑SHA256 hash of a token using the provided
+/// secret, used as a non‑reversible key for Redis so raw tokens are never
+/// stored in plaintext.
 pub fn hash_token(token: &[u8], secret: &str) -> Result<String, CryptoError> {
     debug!("Hashing token (len={}) with HMAC-SHA256", token.len());
     //Hmac Invalid length
@@ -69,8 +71,10 @@ pub fn hash_token(token: &[u8], secret: &str) -> Result<String, CryptoError> {
 }
 
 //------------------------------- generating access token--------------------------
-
-/// accepts user refresh token and generate new JWT access token , Err(CryptoError::JwtEncode)
+/// Creates a signed JWT access token for the given user payload by:
+/// 1. Building `Claims` with user id, username, and `exp` in `seconds`.
+/// 2. Encoding with the shared HMAC secret, returning the JWT string or a
+///    `CryptoError::Jwt` on failure.
 pub fn create_jwt_access_token(
     user: &UserTokenPayload,
     seconds: i64,
@@ -93,7 +97,8 @@ pub fn create_jwt_access_token(
 }
 
 //------------------------------- user password hashing -------------------
-/// accepts a secured password as secret of string and produce a one way hashed and salted using argon2id
+/// Hashes a secret‑boxed password using Argon2id with a random salt and
+/// returns the encoded hash string suitable for storage in the database.
 pub fn hash_password(password: &SecretBox<String>) -> Result<String, CryptoError> {
     debug!("Hashing password with Argon2id");
 
@@ -107,7 +112,11 @@ pub fn hash_password(password: &SecretBox<String>) -> Result<String, CryptoError
     Ok(password_hash)
 }
 
-/// accepts a raw password from user , and a hashed version of the password (mainly retrived from database)
+/// Verifies a secret‑boxed password against an Argon2 encoded hash by:
+/// 1. Parsing the stored hash format.
+/// 2. Returning `Ok(true)` on match, `Ok(false)` on password mismatch
+///    only, and `Err(CryptoError::PasswordHash)` on other verification
+///    errors.
 pub fn verify_password(
     password: &SecretBox<String>,
     password_hash: &str,
@@ -134,18 +143,24 @@ pub fn verify_password(
 }
 
 //-----------------------
-
+/// Serializes any `Serialize` value to a JSON string, mapping errors into
+/// `ApiError::Serialization` and logging failures.
 pub fn serialize_content(content: &impl Serialize) -> Result<String, ApiError> {
     debug!("serializing content to json");
     Ok(serde_json::to_string(content)
         .inspect_err(|e| error!("JSON serialization failed: {}", e))?)
 }
+/// Deserializes a JSON string into type `T`, logging failures and mapping
+/// them to `ApiError::Serialization`.
 pub fn deserialize_content<T: DeserializeOwned + Debug>(content: &str) -> Result<T, ApiError> {
     debug!("Deserializing JSON content (len={})", content.len());
     Ok(serde_json::from_str(content)
         .inspect_err(|e| error!("JSON deserialization failed: {}", e))?)
 }
 //----------------------
+/// Extracts a refresh token from either the `token` cookie or an optional
+/// JSON body `TokenPayload`, returning `ApiError::Unauthorized` if not
+/// found in either location.
 pub fn extract_refresh_token(
     cookie_jar: &CookieJar,
     body: Option<Json<TokenPayload>>,
@@ -169,11 +184,18 @@ pub fn extract_refresh_token(
     token
 }
 //------------------------
-/// the token maybe Uuid or CSRPNG hashed
+/// Builds a namespaced Redis key for a given token type and token value
+/// (e.g., `signup:<hash>`, `refresh:<hash>`), keeping key construction
+/// consistent across the codebase.
 pub fn create_redis_key(token_type: TokenType, token: &str) -> String {
     format!("{}:{}", token_type, token)
 }
-
+/// Validates a file/folder display name by enforcing:
+/// 1. Length between 1 and 255 characters.
+/// 2. Not equal to `.` or `..`.
+/// 3. No trailing dot.
+/// 4. No `/`, `\`, null byte, or control characters.
+/// Returns `ApiError::BadRequest` with a descriptive message on failure.
 pub fn validate_display_name(name: &str) -> Result<(), ApiError> {
     // 1. Length check
     if name.is_empty() || name.len() > 255 {
@@ -214,7 +236,12 @@ pub fn validate_display_name(name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 //-----------------------
-
+/// Revokes a refresh token by:
+/// 1. Decoding the base64url string to bytes and hashing it with HMAC
+///    using `hmac_sec`.
+/// 2. Building the Redis key for `TokenType::Refresh`.
+/// 3. Deleting the corresponding entry from Redis via
+///    `delete_token_from_redis`.
 pub async fn revoke_refresh_token(
     hmac_sec: &str,
     refresh_token: &str,

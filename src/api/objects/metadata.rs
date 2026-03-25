@@ -12,6 +12,11 @@ use crate::{
     update_file_metadata,
 };
 
+/// Lists all user‑owned objects (files and folders) by:
+/// 1. Using the authenticated user id from `Claims` to query Postgres for
+///    every object they own (`fetch_all_user_object_ids`).
+/// 2. Returning the result as a JSON array of `FolderChild` items that
+///    clients can use to build a full client‑side tree or cache.
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
 ))]
@@ -24,6 +29,12 @@ pub async fn list_objects(
         .await
         .map(Json)?)
 }
+/// Returns the immediate children of a specific folder for the authenticated
+/// user by:
+/// 1. Resolving the folder id from the path and user id from `Claims`.
+/// 2. Querying Postgres for all direct children under that folder
+///    (`fetch_folder_children`), enforcing ownership.
+/// 3. Wrapping the list of `FolderChild` records in JSON for the response.
 #[instrument(skip_all,err(Display),fields(
     user_id=%claims.sub,
     folder_id=%folder_id,
@@ -41,6 +52,14 @@ pub async fn list_children(
             .map(Json)?,
     )
 }
+/// Fetches metadata for a single file or folder owned by the authenticated
+/// user by:
+/// 1. Inspecting the `kind` query parameter to decide whether to look up a
+///    `FileRecord` or `FolderRecord`.
+/// 2. Querying Postgres via `fetch_obj_info` with the object id, user id,
+///    and expected kind, ensuring the object is active and owned.
+/// 3. Converting the found record into an Axum response and returning it,
+///    or responding with `NotFound` when no matching object exists.
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
     file_id=%f_id,
@@ -77,7 +96,14 @@ pub async fn get_metadata(
         .inspect_err(|e| error!("{}", e))
 }
 
-/// folders table has no metadata field, only the files table has it!!
+/// Updates the metadata field of a file owned by the authenticated user by:
+/// 1. Taking the target file id from the path and new metadata from the
+///    JSON body (`UpdateMetadata`).
+/// 2. Calling `update_file_metadata` in Postgres with the user id, file id,
+///    and metadata payload, which only applies to files (folders have no
+///    metadata field).
+/// 3. Returning the updated metadata as JSON on success, or propagating a
+///    suitable error if the update fails or the file is not owned.
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
     file_id=%f_id,

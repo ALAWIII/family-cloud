@@ -9,6 +9,12 @@ use tracing::{info, instrument};
 use crate::{
     ApiError, AppState, TokenPayload, extract_refresh_token, get_redis_con, revoke_refresh_token,
 };
+
+/// Handles user logout by extracting the refresh token from cookies or the
+/// request body and revoking it server‑side. It derives the Redis key from
+/// the token using the HMAC secret, removes the corresponding refresh token
+/// entry so it can no longer be used to mint new access tokens, and responds
+/// with 204 No Content on success.
 #[instrument(skip_all)]
 pub async fn logout(
     State(appstate): State<AppState>,

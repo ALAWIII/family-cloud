@@ -61,8 +61,29 @@ pub struct StreamResult {
 pub struct UploadQuery {
     pub parent_id: Uuid,
 }
-/// # WorkFlow
-/// consider refactor this function and using Compensating Transaction/Command design pattrens.
+/// Handles uploading new files or folders into the user’s storage under the
+/// given parent folder by:
+/// 1. Parsing and validating upload headers (`extract_headers`) to detect
+///    whether the object is a file or folder, name, size, MIME type, and
+///    checksum.
+/// 2. For folders, checking for existing siblings (`is_obj_exists`) and
+///    inserting a new `FolderRecord` in Postgres (`insert_folder`) before
+///    returning 201.
+/// 3. For files, enforcing quota constraints (`get_user_available_storage`),
+///    checking for name collisions (`is_obj_exists`), and preparing a
+///    `FileRecord` with basic metadata.
+/// 4. Initiating an S3 multipart upload (`create_multipart_upload`) and
+///    orchestrating the streaming pipeline: chunking the body into parts
+///    (`spawn_body_streamer`), uploading parts in parallel
+///    (`spawn_uploaders` → `upload_single_part`), and collecting results
+///    (`collect_results`) inside `stream_file_rustfs`.
+/// 5. Committing or rolling back side effects via saga commands:
+///    completing the multipart upload (`complete_upload`), inserting or
+///    marking file metadata in Postgres (`insert_file_db`, `delete_file_db`),
+///    adjusting user storage usage (`increment_storage`), and cleaning up
+///    failed uploads in RustFS (`abort_upload`, `delete_file_rustfs`).
+/// 6. On success, finalizing the in‑memory `FileRecord` in `UploadContext`
+///    and returning 201 Created with the stored file’s metadata.
 #[instrument(skip_all, fields(
     user_id=%claims.sub,
     username=claims.username
@@ -178,7 +199,12 @@ pub async fn upload(
     Ok((StatusCode::CREATED, f).into_response())
 }
 
-/// extracts required and optional headers.
+/// Extracts and validates upload‑related headers into a structured
+/// `UploadHeaders` value. Ensures a valid `Object-Type` (file or folder),
+/// a non‑empty, display‑safe name, and for files enforces presence and
+/// correctness of `Content-Length`, infers or normalizes `Content-Type`,
+/// and requires a checksum header, returning detailed bad‑request errors
+/// if any header is missing or malformed.
 fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
     info!("extracting headers");
     let obj_kind = headers
@@ -241,7 +267,10 @@ fn extract_headers(headers: &HeaderMap) -> Result<UploadHeaders, ApiError> {
         checksum,
     })
 }
-/// ===== Create multipart session, returns upload id ===== file_id == object key in rustfs
+/// Starts a new multipart upload transaction in RustFS/S3 for the given
+/// file and returns the generated `upload_id`. Configures the target bucket,
+/// object key (file UUID), and content type, and wraps any SDK failures into
+/// a `RustFSError::Upload` so callers can treat it as an atomic setup step.
 async fn create_multipart_upload(
     client: &Client,
     bucket: &str,
@@ -274,14 +303,13 @@ async fn create_multipart_upload(
         .map(|id| id.to_string())
         .ok_or_else(|| RustFSError::Upload(anyhow!("No upload ID returned")))
 }
-/// # Main entry point
-/// - the function orchestrator for the whole streaming process.
-/// 1. spawn_body_streamer: collects, chunks the arrived bytes into buffer and sends them into the channel (part_tx).
-/// 2. spawn_uploaders: spawns multiple parllel uploaders, recives arrived Part's (part_rx) stream them to RustFS, the results returned are sent into the channel (result_tx).
-/// 3. collect_results: recives a stream of completed parts using (result_rx) and then collects and return back.
-/// 4. body streams -> spawn_uploaders uses upload_single_part(part_x) -> collect_results.
-/// 5. collect_results is_failure ? abort the whole upload, otherwise when all parts are streamed with OK pass.
-/// 6. complete_upload with a list of sorted success uploaded parts.
+/// Orchestrates streaming the HTTP request body into RustFS as a multipart
+/// upload command used by the saga. It wires together the body streamer,
+/// parallel upload workers, and result collector to produce a sorted list
+/// of completed parts, computes a running checksum and total size, and
+/// records both the parts and size into `UploadContext`. It also enforces
+/// checksum and quota checks, setting appropriate errors in the context and
+/// returning them so the saga can trigger compensating actions.
 #[ironcmd(result)]
 pub async fn stream_file_rustfs<'a>(
     client: Client,
@@ -343,9 +371,11 @@ pub async fn stream_file_rustfs<'a>(
     Ok(())
 }
 
-/// # ===== Stream body and buffer into parts =====
-/// 1. collects bytes from  body into buffer.
-/// 2. len(buffer) = 5MB -> wrap the 5MB bytes into Part type and send it using part_tx
+/// Consumes the request body as a byte stream, buffers it into 5 MB chunks,
+/// and sends each chunk as a `PartToUpload` over `part_tx` while computing
+/// a SHA‑256 checksum and total size. When the stream ends it returns a
+/// `StreamResult` containing the final base64‑encoded checksum and file
+/// size, or a `RustFSError::Upload` if the body stream fails.
 fn spawn_body_streamer(
     body: Body,
     part_tx: mpsc::Sender<PartToUpload>,
@@ -404,11 +434,12 @@ fn spawn_body_streamer(
 }
 
 /// ===== Spawn parallel uploader tasks =====
-/// # Concurrent Uploading
-/// - consumes the part_rx receive channel endpoint
-/// - new part arraived 5MB -> acquire a permit -> spawn new upload thread -> fead to upload_single_part -> start stream the part to RustFS.
-/// - returns a result -> stream it back using result_tx send endpoint channel.
-/// - drop the permit to free a slot.
+/// Spawns a pool of concurrent uploader tasks that receive file parts from
+/// `part_rx`, upload each part to RustFS/S3 using `upload_single_part`,
+/// and forward the results to `result_tx`. It limits concurrency via a
+/// semaphore, ensures all part uploads are awaited before returning, and
+/// lets callers react to individual part successes or failures via the
+/// result channel.
 fn spawn_uploaders(
     client: Client,
     bucket: String,
@@ -458,6 +489,11 @@ fn spawn_uploaders(
     })
 }
 /// ===== Collect upload results, on error should abort the whole upload. =====
+/// Consumes the stream of individual part upload results, failing fast if
+/// any part is corrupted or fails, and otherwise collecting all successful
+/// `CompletedPart` entries. It sorts the parts by `part_number` to satisfy
+/// S3‑style multipart completion requirements and returns them as a ready
+/// list for the final `complete_multipart_upload` call.
 async fn collect_results(
     mut result_rx: mpsc::Receiver<Result<CompletedPart, RustFSError>>,
 ) -> Result<Vec<CompletedPart>, RustFSError> {
@@ -473,7 +509,10 @@ async fn collect_results(
     Ok(completed_parts)
 }
 
-// ===== Upload single part with retry =====
+/// Uploads a single multipart chunk to RustFS/S3 with basic retry logic.
+/// It attempts the part up to three times, with exponential backoff between
+/// attempts, and on success returns a `CompletedPart` describing the part;
+/// if all retries fail, it wraps the final error into a `RustFSError::Upload`.
 async fn upload_single_part(
     client: &Client,
     bucket: &str,
@@ -517,6 +556,12 @@ async fn upload_single_part(
 }
 
 /// ===== Complete multipart upload, commits the uploaded file to RustFS.=====
+/// Finalizes a multipart upload in RustFS/S3 using the parts previously
+/// recorded in `UploadContext`, committing the assembled object. On success,
+/// it updates the in‑memory `FileRecord` with the object’s ETag, last
+/// modification time, and active status so that the database layer can
+/// persist accurate metadata; on failure, it returns `RustFSError::Upload`
+/// so the saga can invoke compensating actions.
 #[ironcmd(result)]
 async fn complete_upload<'a>(
     client: &'a Client,
@@ -547,7 +592,10 @@ async fn complete_upload<'a>(
 }
 
 /// ===== Abort multipart upload on error =====
-/// - cleans any unfinshed upload on failure.
+/// Aborts an in‑progress multipart upload in RustFS/S3 for the given file
+/// and upload id, cleaning up any partial data on storage. Used as a
+/// compensating command in the saga when streaming or completion fails,
+/// and returns a `RustFSError::Upload` if the underlying abort call fails.
 #[ironcmd(result)]
 async fn abort_upload<'a, 'b, 'c>(
     client: &'a Client,
@@ -566,6 +614,10 @@ async fn abort_upload<'a, 'b, 'c>(
 
     Ok(())
 }
+/// Upserts the current `FileRecord` from `UploadContext` into Postgres once
+/// the upload has succeeded, updating or inserting the file’s metadata. It
+/// logs database errors and surfaces them as `DatabaseError` so the saga
+/// can decide whether to roll back or reconcile later.
 #[ironcmd(result)]
 async fn insert_file_db<'a>(
     db_pool: &'a PgPool,
@@ -584,6 +636,10 @@ async fn insert_file_db<'a>(
 
     Ok(())
 }
+/// Marks the file in Postgres as deleted when the upload saga needs to roll
+/// back an already‑persisted record. It sets the status to `Deleted` on the
+/// `FileRecord` in `UploadContext` and upserts it, logging any issues while
+/// returning a `DatabaseError` if the metadata update fails.
 #[ironcmd(result)]
 async fn delete_file_db<'a>(
     db_pool: &'a PgPool,
@@ -598,9 +654,16 @@ async fn delete_file_db<'a>(
         .inspect_err(|e| error!("database marking file as deleted failed: {}", e))?;
     Ok(())
 }
-
+/// No‑op command used as an initial placeholder in the upload saga pipeline,
+/// primarily to attach rollback behavior (like aborting a multipart upload)
+/// before any real side effects are executed.
 #[ironcmd]
 async fn temp_cmd() {}
+/// Shared mutable context for the multipart upload saga. Carries the in‑flight
+/// `FileRecord`, the collected list of completed parts, the final checksum and
+/// size validation results, and any API errors (checksum mismatch or quota
+/// exceeded) that should short‑circuit the saga and trigger compensating
+/// actions.
 #[derive(Default)]
 struct UploadContext {
     pub completed_part: Option<Vec<CompletedPart>>,
@@ -609,6 +672,11 @@ struct UploadContext {
     pub file: Option<FileRecord>,
 }
 
+/// Increments the user’s stored `storage_used_bytes` counter in Postgres by
+/// the size of the successfully uploaded file recorded in `UploadContext`.
+/// This runs as the final saga command once the object is committed in
+/// RustFS and metadata is persisted, keeping logical quota accounting in
+/// sync with actual object storage.
 #[ironcmd(result)]
 async fn increment_storage<'a>(
     con: &'a PgPool,
@@ -619,7 +687,10 @@ async fn increment_storage<'a>(
     increment_storage_used_for_user(con, user_id, upctxl.file.as_ref().unwrap().size).await?;
     Ok(())
 }
-
+/// Deletes the physical object from RustFS/S3 using the bucket and key
+/// derived from the `FileRecord` in `UploadContext`. Used as a compensating
+/// command to clean up orphaned files when database updates or quota checks
+/// fail after the object has already been uploaded.
 #[ironcmd(result)]
 async fn delete_file_rustfs<'a>(
     rfs_con: &'a Client,

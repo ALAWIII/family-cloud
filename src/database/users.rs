@@ -9,7 +9,8 @@ use tracing::{debug, error};
 use uuid::Uuid;
 static DELETE_ACCOUNT_QUERY: &str = include_str!("../../db_queries/delete_account.sql");
 
-/// used when user upload new file, so that to increment the user storage usage.
+/// Increments a user’s `storage_used_bytes` counter by the given size, and
+/// returns the number of affected rows (0 if the user does not exist).
 pub async fn increment_storage_used_for_user(
     con: &PgPool,
     user_id: Uuid,
@@ -27,7 +28,8 @@ pub async fn increment_storage_used_for_user(
     .inspect_err(|e| error!("failed to increment storage for a user: {e}"))?;
     Ok(r.rows_affected())
 }
-/// used to update the upper bound of user maximum allowed storage.
+/// Updates a user’s `storage_quota_bytes` (maximum allowed storage) and
+/// returns the number of rows affected so callers can detect missing users.
 pub async fn update_user_maximum_storage(
     con: &PgPool,
     user_id: Uuid,
@@ -43,7 +45,13 @@ pub async fn update_user_maximum_storage(
     .inspect(|e| error!("failed to update user maximum storage: {e:?}"))?;
     Ok(r.rows_affected())
 }
-/// used to insert new user account with its own root folder.
+/// Creates a new user together with its root folder in a single
+/// transaction by:
+/// 1. Inserting the `FolderRecord` into `folders`.
+/// 2. Inserting the `User` into `users` with `root_folder` pointing to
+///    that folder id.
+/// 3. Translating unique email violations into `DatabaseError::Duplicate`
+///    and any other failure into `DatabaseError::Connection`.
 pub async fn insert_user_with_root_folder(
     user: &User,
     folder: &FolderRecord,
@@ -95,12 +103,10 @@ pub async fn insert_user_with_root_folder(
     Ok(())
 }
 
-/// searching for a user by its email ,
-///
-/// # Error
-/// If the email not found : DatabaseError::NotFound
-///
-/// otherwise : DatabaseError::Connection(e)
+/// Fetches a full user account by email for authentication flows by:
+/// 1. Querying `users` for id, root_folder, username, email,
+///    password_hash, created_at, storage quota and usage.
+/// 2. Returning `DatabaseError::NotFound` when no user has that email.
 pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, DatabaseError> {
     debug!(email = email, "searching user account by using email.");
 
@@ -120,7 +126,9 @@ pub async fn fetch_account_info(con: &PgPool, email: &str) -> Result<User, Datab
     .inspect_err(|e| error!("{}", e))
     // if user not found !!
 }
-/// used to search for user account by its id.
+/// Fetches a lightweight `UserProfile` for a given user id, returning
+/// `Ok(Some(profile))` when found or `Ok(None)` when the user does not
+/// exist.
 pub async fn fetch_profile_info(
     con: &PgPool,
     user_id: Uuid,
@@ -140,7 +148,9 @@ pub async fn fetch_profile_info(
     .inspect_err(|e| error!("failed to obtain user profile info: {e}"))?;
     Ok(v)
 }
-/// Check if email exists/verified and stored in database. (returns user_id)
+/// Checks if an account with the given email exists and returns its user
+/// id if present, or `None` otherwise; used for signup and change‑email
+/// validation.
 pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>, DatabaseError> {
     debug!(
         email = email,
@@ -154,9 +164,9 @@ pub async fn is_account_exist(con: &PgPool, email: &str) -> Result<Option<Uuid>,
             .inspect_err(|e| error!("database error when searching for id by email : {}", e))?,
     )
 }
-/// accepts user id and fires a massive deletion operation ,
-///
-/// returns all file ids to be send and deleted to RustFS.
+/// Deletes a user account and all associated objects using a single SQL
+/// script, returning the ids of all files that should be deleted from
+/// object storage (skipping any `NULL` placeholders).
 pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>, DatabaseError> {
     let res = sqlx::query_as::<_, FileId>(DELETE_ACCOUNT_QUERY)
         .bind(user_id)
@@ -165,7 +175,8 @@ pub async fn delete_account_db(con: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>,
         .inspect_err(|e| error!("failed to delete user with all its associated objects: {e}"))?;
     Ok(res.into_iter().filter_map(|v| v.id).collect())
 }
-/// searches for the user email by providing its id.
+/// Fetches a user’s email address by id, returning `Ok(Some(email))` when
+/// found or `Ok(None)` when no such user exists.
 pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>, DatabaseError> {
     debug!(user_id=%id,"fetching email by user id.");
     Ok(
@@ -177,7 +188,9 @@ pub async fn fetch_email_by_id(con: &PgPool, id: Uuid) -> Result<Option<String>,
             })?,
     )
 }
-/// accepts user id and new email , and then updates its email field.
+/// Updates a user’s email address and maps unique constraint violations on
+/// `users_email_key` to `DatabaseError::Duplicate`, returning the raw
+/// `PgQueryResult` on success.
 pub async fn update_account_email(
     con: &PgPool,
     id: Uuid,
@@ -195,7 +208,9 @@ pub async fn update_account_email(
         })
         .inspect_err(|e| error!("error updating account email : {}", e))
 }
-/// updates user password.
+/// Updates a user’s password hash for the given id and returns the
+/// underlying `PgQueryResult` so callers can verify that exactly one row
+/// was updated.
 pub async fn update_account_password(
     con: &PgPool,
     user_id: Uuid,
@@ -211,7 +226,8 @@ pub async fn update_account_password(
     .await
     .inspect_err(|e| error!("database error: {}", e))?)
 }
-/// updates account username.
+/// Updates the username for a user and returns the canonical username
+/// value as stored in the database (e.g., after any DB‑side normalization).
 pub async fn update_account_username(
     con: &PgPool,
     user_id: Uuid,
@@ -231,7 +247,8 @@ pub async fn update_account_username(
     Ok(v.username)
 }
 
-/// returns the maximum and available storage for a given user.
+/// Returns storage quota and current usage for a user as a
+/// `UserStorageInfo` struct, used for both enforcement and UI display.
 pub async fn get_user_available_storage(
     con: &PgPool,
     user_id: Uuid,

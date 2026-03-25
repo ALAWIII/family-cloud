@@ -18,7 +18,6 @@ use crate::{
     hash_token, is_token_exist, password_reset_body, serialize_content, store_token_redis,
     update_account_password,
 };
-//const EXPIRED_TOKEN_MSG: &str = "Your request expired. Please request a new password reset link.";
 
 #[derive(Deserialize)]
 pub struct PasswordResetForm {
@@ -38,7 +37,12 @@ fn password_form_page(token: &str) -> Html<String> {
             .unwrap_or("".into()),
     )
 }
-
+/// Handles initiating a password reset by accepting an email address, looking
+/// up the corresponding account, and generating a short‑lived password reset
+/// token. It stores the token and user data in Redis, then sends a password
+/// reset email containing a verification link to the user. The endpoint
+/// always responds with 200 on success, without revealing whether the email
+/// belongs to a valid account in a timing‑safe way.
 #[instrument(skip_all,fields(email=pswd_info.email))]
 pub async fn password_reset(
     State(appstate): State<AppState>,
@@ -101,9 +105,12 @@ pub async fn password_reset(
         .await?;
     info!("Password Reset Success");
     Ok(StatusCode::OK)
-
-    //  (, "If account exists, check your email".into())
 }
+/// Verifies an incoming password reset token from the query string and
+/// validates it against Redis. If the token exists and is still valid, it
+/// renders and returns the HTML password reset form pre‑bound to that token;
+/// otherwise, it fails with a bad request error indicating an invalid or
+/// expired reset link.
 #[instrument(skip_all)]
 pub async fn verify_password_reset(
     State(appstate): State<AppState>,
@@ -127,6 +134,12 @@ pub async fn verify_password_reset(
             "token not existed in redis database"
         )))
 }
+/// Confirms a password reset by validating the submitted form, checking that
+/// the new password and its confirmation match, and resolving the reset token
+/// in Redis. When valid, it hashes the new password, updates the user’s
+/// password in Postgres, deletes the reset token from Redis to prevent reuse,
+/// and returns 200 OK; otherwise, it responds with an appropriate validation
+/// or authorization error.
 #[instrument(skip_all)]
 pub async fn confirm_password_reset(
     State(appstate): State<AppState>,

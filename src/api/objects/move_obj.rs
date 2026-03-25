@@ -3,6 +3,17 @@ use axum::{Extension, Json, debug_handler, extract::State};
 use crate::{ApiError, AppState, Claims, MoveRequest, MoveResponse, change_object_parent_id};
 use tracing::{error, info, instrument};
 
+/// Moves a file or folder to a new parent folder for the authenticated user by:
+/// 1. Accepting a `MoveRequest` that specifies source id, destination id, and
+///    object kind, then calling `change_object_parent_id` in Postgres with
+///    the user id to perform the move.
+/// 2. Inspecting the result flags to detect name conflicts or cyclic moves
+///    (e.g., moving a folder into its own descendant) and returning
+///    `Conflict` when such conditions are found.
+/// 3. Returning `NotFound` when either the source or destination no longer
+///    exists or is deleted.
+/// 4. On success, wrapping the moved object id in `MoveResponse` and
+///    returning it as JSON.
 #[debug_handler]
 #[instrument(skip_all,fields(
     user_id=%claims.sub,

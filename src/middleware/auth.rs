@@ -10,7 +10,15 @@ use jsonwebtoken::{DecodingKey, Validation, decode};
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, error, instrument};
 
-/// accepts the request and extracts the JWT access token and then evaluate its validity
+/// Middleware that validates a JWT access token from the `Authorization`
+/// header and injects its `Claims` into the request by:
+/// 1. Extracting a `Bearer <token>` string from the `authorization` header;
+///    returning `401 Unauthorized` if missing or malformed.
+/// 2. Decoding and verifying the token using the shared HMAC secret, mapping
+///    any validation failure to `401 Unauthorized`.
+/// 3. Inserting the decoded `Claims` into the request extensions so
+///    downstream handlers can access authenticated user data, then
+///    forwarding the request to the next middleware/handler.
 #[debug_middleware]
 #[instrument(skip_all)]
 pub async fn validate_jwt_access_token(

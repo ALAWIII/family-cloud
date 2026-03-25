@@ -11,6 +11,13 @@ use uuid::Uuid;
 
 static DB_POOL: OnceLock<PgPool> = OnceLock::new();
 
+/// Initializes the global PostgreSQL connection pool exactly once by:
+/// 1. Building a `PgPool` from `DatabaseConfig` with the desired max
+///    connections and connecting to the database URL.
+/// 2. Running any pending SQLx migrations from `./migrations` (ignoring
+///    missing directories in non‑prod setups).
+/// 3. Storing the pool in a `OnceLock<PgPool>` and returning
+///    `DatabaseError::PoolAlreadyInitialized` if called more than once.
 #[instrument(skip_all,ret(level=Level::DEBUG),fields(
     init_id=%Uuid::new_v4(),
     db_name=db.db_name,
@@ -38,6 +45,9 @@ pub async fn init_db(db: &DatabaseConfig) -> Result<(), DatabaseError> {
     debug!("establishing database connection successfully");
     Ok(())
 }
+/// Returns a clone of the globally initialized PostgreSQL pool, or
+/// `DatabaseError::PoolNotInitialized` if `init_db` has not been called
+/// successfully yet.
 pub fn get_db() -> Result<PgPool, DatabaseError> {
     debug!("trying to get a reference of database pool connection");
     DB_POOL

@@ -15,19 +15,21 @@ use crate::{
     get_redis_con, serialize_content,
 };
 
-/// user -> request (object_id) -> server .
-///
-/// if user cancels download and the connection dies --- server should implement a mechanisim to clean the token from redis and decrement the user counter.
-///
-/// server -> verifies user identity using JWT access token.
-///
-/// redis stores key : user_id:download , values : set(active download tokens)
-///
-/// server -> checks if the user owns the file .
-///
-/// server -> checks if the user concurrent downloads was exceeded .
-///
-/// server -> if owns(user_id,file_id) && ~ exceeded(user_id,x) then : generate(token,24h) -> user
+/// Issues a short‑lived download token for an authenticated user and object by:
+/// 1. Resolving the requested object (file or folder) from Postgres
+///    (`fetch_obj_info`) while enforcing ownership and non‑deleted status,
+///    returning 404 if it does not belong to the caller.
+/// 2. Looking up the user’s current active download count in Redis
+///    (`HLEN` on the per‑user download key) and rejecting the request with
+///    `TooManyDownloads` when the configured concurrent limit is reached.
+/// 3. Generating a new UUID download token, building a `DownloadTokenData`
+///    payload that includes the target object and caller IP, and
+///    serializing it for storage.
+/// 4. Writing the token and its metadata into Redis with a TTL based on
+///    `download_token_ttl`, so that the streaming endpoints can later
+///    validate both the token and client IP.
+/// 5. Returning the raw token wrapped in `TokenPayload` as JSON so the
+///    client can call the streaming API with it.
 #[instrument(skip_all,fields(
     user_id=%claims.sub,
     user_ip=%addr.ip(),

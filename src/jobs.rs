@@ -32,6 +32,17 @@ const MULTIPART_THRESHOLD: i64 = 4 * 1024 * 1024 * 1024;
 static DELETE_SENDER: OnceLock<Sender<DeleteJob>> = OnceLock::new();
 static COPY_SENDER: OnceLock<Sender<CopyJob>> = OnceLock::new();
 
+/// Initializes background workers for copy/delete jobs using Apalis by:
+/// 1. Preparing shared `JobState` (RustFS client + DB pool) and running
+///    Apalis Postgres migrations.
+/// 2. Creating separate shared backends for delete and copy queues using
+///    the provided worker names.
+/// 3. Building two workers (`delete_file_rustfs`, `copy_file_rustfs`) with
+///    infinite retry and exponential backoff, sized to CPU count.
+/// 4. Initializing in‑process MPSC channels (`init_delete_channel`,
+///    `init_copy_channel`) that batch jobs into Apalis storage.
+/// 5. Spawning both workers in the background and returning when setup
+///    succeeds.
 #[instrument(skip_all)]
 pub async fn init_apalis(con: &PgPool, rfs: Client, w_names: WorkersName) -> Result<(), JobError> {
     let jobstate = JobState {
@@ -99,6 +110,9 @@ pub async fn init_apalis(con: &PgPool, rfs: Client, w_names: WorkersName) -> Res
 
     Ok(())
 }
+/// Logical delete job used by workers and queues, describing which file
+/// id to delete from which bucket and whether it’s part of a full account
+/// deletion (in which case bucket cleanup may follow).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeleteJob {
     pub f_id: Uuid,
@@ -109,27 +123,47 @@ pub struct DeleteJob {
 pub struct FileId {
     pub id: Option<Uuid>,
 }
+/// Logical copy job used by workers and queues, combining the DB‑level
+/// copy record (`CopyJobRecord`) with the owning bucket (user id) for
+/// RustFS operations.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CopyJob {
     pub record: CopyJobRecord,
     pub bucket: Uuid, // user bucket.
 }
+/// DB record describing a single file copy mapping by:
+/// - `source_file_id`: original object key
+/// - `new_file_id`: destination object key
+/// - `new_parent_folder_id`: folder where the new file metadata lives.
 #[derive(Debug, Deserialize, Serialize, Clone, FromRow)]
 pub struct CopyJobRecord {
     pub source_file_id: Uuid, // the source file_id we want to copy its object.
     pub new_file_id: Uuid, // target name of the file wanted to name when copy the file that is name file_id, this field is needed in order to update he files table in database !!
     pub new_parent_folder_id: Uuid, // folder that will contain the file , this field is needed to update the database later with parent_id of target_file_id!!
 }
+/// Shared state injected into workers, carrying both the RustFS client and
+/// Postgres pool.
 #[derive(Debug, Clone)]
 pub struct JobState {
     pub rfs_client: Client,
     pub db_pool: PgPool,
 }
+/// Worker queue names for copy and delete pipelines, used to isolate
+/// backends in Apalis.
 #[derive(Debug, Clone)]
 pub struct WorkersName {
     pub delete: String,
     pub copy: String,
 }
+/// Background worker that deletes a single object (and optionally its
+/// bucket) from RustFS by:
+/// 1. Calling `delete_object(bucket, key)` and treating `NoSuchKey` and
+///    `NoSuchBucket` as non‑errors (idempotent deletes).
+/// 2. When `account_deletion` is true, attempting to delete the user’s
+///    bucket via `delete_user_bucket`, ignoring `BucketNotEmpty` and
+///    `NoSuchBucket`.
+/// 3. Returning an error only for unexpected S3 failures so Apalis can
+///    retry.
 async fn delete_file_rustfs(
     job: DeleteJob,
     ctx: WorkerContext,
@@ -168,7 +202,16 @@ async fn delete_file_rustfs(
     debug!("deleting file success.");
     Ok(())
 }
-
+/// Background worker that copies a file inside RustFS and finalizes its DB
+/// state by:
+/// 1. Verifying the source object exists with `head_object`, skipping the
+///    job permanently if it is genuinely missing.
+/// 2. For small files, performing a single `copy_object`; for large files,
+///    setting up multipart upload, delegating part copies to
+///    `multipart_copy`, and aborting on failure.
+/// 3. Calling `finalize_copy` to mark the new file as `active` and to
+///    decrement the parent folder’s copying counter.
+/// 4. Surfacing only transient errors so Apalis can retry.
 async fn copy_file_rustfs(
     job: CopyJob,
     ctx: WorkerContext,
@@ -260,7 +303,13 @@ async fn copy_file_rustfs(
     debug!("job copying success.");
     Ok(())
 }
-/// invoked once in the main function but kicked to a secondary thread to start consuming the channel.
+/// Sets up the in‑process copy job channel and batching loop by:
+/// 1. Creating a bounded MPSC channel and storing its sender in the global
+///    `COPY_SENDER` (only once).
+/// 2. Spawning a task that accumulates up to 500 `CopyJob`s or flushes
+///    every 5 seconds, then pushes them as a stream into the shared Apalis
+///    storage.
+/// 3. Running indefinitely to feed the copy worker backend.
 async fn init_copy_channel(mut copy_pusher: SharedStorage<CopyJob>) -> Result<(), JobError> {
     debug!("creating the copyjob channel.");
     let (tx, mut rx) = mpsc::channel::<CopyJob>(1_000_000); // if copyJob size = 200 byte then 1000000*200 = 200 MB memory consumption
@@ -294,8 +343,12 @@ async fn init_copy_channel(mut copy_pusher: SharedStorage<CopyJob>) -> Result<()
     });
     Ok(())
 }
-
-/// invoked once in the main function but kicked to a secondary thread to start consuming the channel.
+/// Sets up the in‑process delete job channel and batching loop by:
+/// 1. Creating a bounded MPSC channel and storing its sender in the global
+///    `DELETE_SENDER`.
+/// 2. Spawning a task that batches up to 500 `DeleteJob`s or flushes every
+///    5 seconds into the Apalis storage.
+/// 3. Providing a continuous feed for the delete worker backend.
 async fn init_delete_channel(mut delete_pusher: SharedStorage<DeleteJob>) -> Result<(), JobError> {
     debug!("creating deletJob channel.");
     let (tx, mut rx) = mpsc::channel::<DeleteJob>(1_000_000); // if deletejob size = 100 bytes then 1000000*100 = 100 MB memory
@@ -330,7 +383,11 @@ async fn init_delete_channel(mut delete_pusher: SharedStorage<DeleteJob>) -> Res
     });
     Ok(())
 }
-/// invoked in the delete endpoint only!!
+/// Enqueues delete jobs into the background worker by:
+/// 1. Fetching the global `DELETE_SENDER`, failing if workers are not
+///    initialized.
+/// 2. Sending each `DeleteJob` over the channel, mapping send failures to
+///    `JobError::Send`.
 pub async fn send_delete_jobs_to_worker(f_ids: Vec<DeleteJob>) -> Result<(), JobError> {
     let snd = DELETE_SENDER.get().ok_or(JobError::NotInitalized(anyhow!(
         "Delete sender not initalized yet"
@@ -343,7 +400,11 @@ pub async fn send_delete_jobs_to_worker(f_ids: Vec<DeleteJob>) -> Result<(), Job
     Ok(())
 }
 
-/// invoked in the copy endpoint only!!
+/// Enqueues copy jobs into the background worker by:
+/// 1. Fetching the global `COPY_SENDER`, failing if workers are not
+///    initialized.
+/// 2. Streaming each `CopyJob` into the channel, returning
+///    `JobError::Send` on backpressure/closure failures.
 pub async fn send_copy_jobs_to_worker(f_ids: Vec<CopyJob>) -> Result<(), JobError> {
     let snd = COPY_SENDER.get().ok_or(JobError::NotInitalized(anyhow!(
         "Copy sender not initalized yet"
@@ -357,7 +418,13 @@ pub async fn send_copy_jobs_to_worker(f_ids: Vec<CopyJob>) -> Result<(), JobErro
 }
 
 const PART_SIZE: i64 = 100 * 1024 * 1024; // 100MB per part (min 5MB, max 5GB)
-
+/// Performs an S3 multipart server‑side copy for large objects by:
+/// 1. Splitting the source object into 100MB ranges, issuing
+///    `upload_part_copy` calls for each part with `copy_source_range`.
+/// 2. Collecting the returned ETags into a `CompletedMultipartUpload`
+///    structure.
+/// 3. Calling `complete_multipart_upload` with all parts to assemble the
+///    destination object, returning on success or bubbling up any S3 error.
 pub async fn multipart_copy(
     client: &aws_sdk_s3::Client,
     bucket: &str,

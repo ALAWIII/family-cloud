@@ -9,6 +9,13 @@ use crate::{
     verify_password,
 };
 
+/// Handles user login by validating credentials and issuing both access and
+/// refresh tokens. It looks up the account by email, verifies the supplied
+/// password, and on success generates a new opaque refresh token, stores its
+/// hashed form and associated user payload in Redis with a configured TTL,
+/// and mints a short‑lived JWT access token. The handler returns a structured
+/// `LoginResponse` containing the access token, refresh token, and basic user
+/// profile data.
 #[debug_handler]
 #[instrument(skip_all,fields(email=credentials.email))]
 pub async fn login(

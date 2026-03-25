@@ -6,7 +6,23 @@ use crate::{
     ApiError, AppState, Claims, DatabaseError, DeleteJob, DeleteRequest, ObjectKind,
     delete_objects, send_delete_jobs_to_worker,
 };
-
+/// Deletes a batch of user‑owned files and folders and schedules their
+/// physical removal by:
+/// 1. Validating that the incoming delete list is non‑empty, otherwise
+///    failing with a bad‑request error.
+/// 2. Splitting the requests into folder and file id lists, based on each
+///    item’s `ObjectKind`.
+/// 3. Issuing parallel logical deletes in Postgres for folders and files
+///    (`delete_objects`), handling cases where some folder deletes are
+///    blocked (e.g., by copy jobs) and treating those as hard errors.
+/// 4. Converting successfully marked rows into `DeleteJob` items that
+///    capture the file/folder id, owning bucket (user id), and whether this
+///    is part of an account deletion.
+/// 5. Handling partial failures by logging the database error but still
+///    queuing any successfully deleted objects as background jobs.
+/// 6. Streaming all collected `DeleteJob`s to the delete worker
+///    (`send_delete_jobs_to_worker`) and returning the number of enqueued
+///    jobs as the JSON response.
 use tracing::{error, info, instrument};
 #[debug_handler]
 #[instrument(skip_all,fields(

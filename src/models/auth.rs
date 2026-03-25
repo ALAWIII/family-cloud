@@ -8,19 +8,24 @@ use std::{fmt::Display, str::FromStr};
 use uuid::Uuid;
 
 use crate::UserProfile;
-
+/// Login response returned by `/api/auth/login`, bundling a short‑lived
+/// JWT access token, a long‑lived opaque refresh token, and the user’s
+/// profile information.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub user: UserProfile,
 }
-
+/// Simple input wrapper for endpoints that take an email address, such as
+/// password reset and change‑email initiation.
 #[derive(Debug, Deserialize)]
 pub struct EmailInput {
     pub email: String,
 }
-
+/// Lightweight user identity used in verification flows (email change,
+/// password reset) containing id, username, and email, serializable to and
+/// from JSON.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserVerification {
     pub id: Uuid,
@@ -43,7 +48,9 @@ impl FromStr for UserVerification {
         serde_json::from_str(s)
     }
 }
-
+/// Pending signup state stored in Redis before a user confirms their email;
+/// holds username, email, and a hashed password, but is not yet persisted
+/// as a full user in Postgres.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PendingAccount {
     pub username: String,
@@ -59,7 +66,8 @@ impl PendingAccount {
         }
     }
 }
-
+/// Payload for signup requests, carrying plain‑text credentials in a
+/// `SecretBox` that will be hashed before storage.
 #[derive(Debug, Deserialize)]
 pub struct SignupRequest {
     pub username: String,
@@ -67,13 +75,16 @@ pub struct SignupRequest {
     pub password: SecretBox<String>, // Received as plain text
 }
 
-/// used only on login request !!!
+/// Credentials used only for login, containing email and a secret‑boxed
+/// plain‑text password.
 #[derive(Debug, Deserialize)]
 pub struct Credentials {
     pub email: String,
     pub password: SecretBox<String>,
 }
-
+/// Wrapper for any token string passed over the wire (e.g., refresh,
+/// signup, reset), using `SecretString` internally and custom serialization
+/// to avoid accidental logging of the token.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TokenPayload {
     #[serde(serialize_with = "serialize_token")]
@@ -85,6 +96,9 @@ where
 {
     serializer.serialize_str(token.expose_secret())
 }
+/// Enumerates all logical token namespaces (signup, password reset,
+/// email‑change, refresh, download, shared) and provides lowercase string
+/// names used when composing Redis keys.
 #[derive(Debug, Clone, Copy)]
 pub enum TokenType {
     Signup,
@@ -110,7 +124,10 @@ impl Display for TokenType {
         )
     }
 }
-
+/// JWT claims used for access tokens, containing user id (`sub`),
+/// username, issued‑at (`iat`), and expiration (`exp`) timestamps.
+/// `new` defaults to a 15‑minute lifetime; `with_expiry` allows custom
+/// durations.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: Uuid, // user ID
@@ -134,6 +151,8 @@ impl Claims {
         self
     }
 }
+/// Minimal user payload embedded in refresh tokens and used to mint new
+/// JWT access tokens, carrying only user id and username.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UserTokenPayload {
     pub id: Uuid,

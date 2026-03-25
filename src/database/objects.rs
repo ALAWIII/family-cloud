@@ -62,7 +62,12 @@ ON CONFLICT (id) DO UPDATE SET
     checksum      = EXCLUDED.checksum
 "#;
 
-/// gets the metadata of an object by its id and the owner_id. T either FileRecord or FolderRecord.
+/// Fetches metadata for a single file or folder owned by a given user by:
+/// 1. Selecting from `files` or `folders` based on `kind`, restricted to
+///    `status IN ('active','copying')`.
+/// 2. Filtering by `id` and `owner_id` to enforce ownership.
+/// 3. Returning `Ok(Some(T))` when found, or `Ok(None)` if no matching
+///    active object exists.
 pub async fn fetch_obj_info<T>(
     con: &PgPool,
     obj_id: Uuid,
@@ -85,7 +90,13 @@ where
 
     Ok(rec)
 }
-/// insert new file or update if already exists.
+/// Inserts or updates a file row in the `files` table by:
+/// 1. Executing an `INSERT ... ON CONFLICT (id) DO UPDATE` using all
+///    fields from `FileRecord`.
+/// 2. Updating key mutable columns on conflict (name, size, etag,
+///    mime_type, timestamps, metadata, status, visibility, checksum).
+/// 3. Returning the underlying `PgQueryResult` for callers that need
+///    affected‑row information.
 pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResult, DatabaseError> {
     Ok(sqlx::query(UPSERT_FILE)
         .bind(file.id)
@@ -107,7 +118,11 @@ pub async fn upsert_file(con: &PgPool, file: &FileRecord) -> Result<PgQueryResul
         .inspect_err(|e| error!("failed to insert or update file: {e}"))?)
 }
 
-/// used to add a logical folder in database when user request to upload folder.
+/// Inserts a new logical folder row into the `folders` table by:
+/// 1. Writing id, owner, parent, name, timestamps, status, and visibility
+///    from the provided `FolderRecord`.
+/// 2. Returning the `PgQueryResult`, or a `DatabaseError` if insertion
+///    fails (e.g., constraint violations).
 pub async fn insert_folder(
     con: &PgPool,
     folder: &FolderRecord,
@@ -134,7 +149,13 @@ pub async fn insert_folder(
     .inspect_err(|e| error!("failed to insert folder: {}", e))?)
 }
 
-/// for searching if a given file/folder id exists and active in db.
+/// Checks whether an active file or folder with the given name already
+/// exists under a specific parent for an owner by:
+/// 1. Choosing the appropriate existence query (files or folders) based on
+///    `kind`.
+/// 2. Filtering by `parent_id`, `owner_id`, `name`, and `status != 'deleted'`.
+/// 3. Returning `Some(id)` when a conflicting object exists, or `None`
+///    otherwise.
 pub async fn is_obj_exists(
     con: &PgPool,
     owner_id: Uuid,
@@ -156,7 +177,12 @@ pub async fn is_obj_exists(
         .inspect_err(|e| error!("failed to query if {} exists: {e}", kind))?)
 }
 
-/// used to obtain all user file/folder ids for syncing purposes.
+/// Returns all active file and folder ids for a user, used for client sync
+/// or reconciliation, by:
+/// 1. Selecting active file ids from `files` and active folder ids from
+///    `folders` for the given `owner_id`.
+/// 2. Tagging each row with a logical `kind` (`'file'` or `'folder'`) and
+///    mapping into `FolderChild`.
 pub async fn fetch_all_user_object_ids(
     con: &PgPool,
     owner_id: Uuid,
@@ -173,7 +199,12 @@ pub async fn fetch_all_user_object_ids(
     .await
     .inspect_err(|e| error!("failed to get all user object ids: {e}"))?)
 }
-/// used to modify/update the metadata field of a file.
+/// Merges new metadata into a file’s `metadata` JSONB column by:
+/// 1. Running an `UPDATE` that does `metadata = COALESCE(metadata, '{}') || $1`
+///    for the given `id` and `owner_id`.
+/// 2. Returning `NotFound` if no matching row exists (wrong id or owner).
+/// 3. Wrapping the resulting JSONB in `UpdateMetadata`, using the input
+///    value as a fallback when the DB returns `NULL`.
 pub async fn update_file_metadata(
     con: &PgPool,
     owner_id: Uuid,
@@ -199,7 +230,12 @@ pub async fn update_file_metadata(
     .map(|v| UpdateMetadata::new(v.metadata.unwrap_or(metadata)))
 }
 
-/// used to get all ids of active files from database to prepare them for streaming/downloading.
+/// Fetches all active files under a folder (recursively) with their full
+/// paths for streaming/downloading by:
+/// 1. Executing the `STREAM_FOLDER` SQL against `files` with the target
+///    `folder_id` and `owner_id`.
+/// 2. Returning a list of `FileDownload` records that contain object keys
+///    and ZIP path information.
 pub async fn fetch_all_file_ids_paths(
     con: &PgPool,
     owner_id: Uuid,
@@ -214,7 +250,12 @@ pub async fn fetch_all_file_ids_paths(
 
     Ok(files)
 }
-/// used in the copy job handler for marking the copying file as active and decrementing its parent copying children count by 1 , so that releasing the lock of modifing the file in database.
+/// Finalizes a copy operation for a single file by:
+/// 1. Starting a DB transaction.
+/// 2. Updating the file’s `status` from `copying` to `active`.
+/// 3. Decrementing the parent folder’s `copying_children_count` (never
+///    below zero) to release modification locks.
+/// 4. Committing the transaction, or returning an error if any step fails.
 pub async fn finalize_copy(
     pool: &PgPool,
     file_id: Uuid,
@@ -249,9 +290,16 @@ pub async fn finalize_copy(
     Ok(())
 }
 
-/// accepts a list of folders/files and then tries to mark the folders and their files as deleted recursively and returns all files ids that are decendant of the deleted folders.
-///
-/// accepts a list of files ids and then marks all of them as deleted.
+/// Marks files or whole folder subtrees as deleted and returns affected
+/// file ids by:
+/// 1. Early‑returning an empty `Some(vec![])` when `objects` is empty.
+/// 2. Starting a transaction and running either `DELETE_FOLDERS` (for
+///    recursive folder deletes) or `DELETE_FILES` based on `kind`.
+/// 3. Collecting `FileId` rows and committing the transaction.
+/// 4. For folder deletes, returning `Ok(None)` when the first row has
+///    `id = NULL` (indicating deletion was blocked), otherwise returning
+///    `Ok(Some(Vec<Uuid>))` with all non‑NULL file ids to be removed from
+///    storage.
 pub async fn delete_objects(
     con: &PgPool,
     owner_id: Uuid,
@@ -286,7 +334,13 @@ pub async fn delete_objects(
     Ok(Some(files_id.into_iter().filter_map(|f| f.id).collect()))
 }
 
-/// accepts list of files or folders and then replicate them under the target destination.
+/// Replicates files or folders under a destination folder by:
+/// 1. Early‑returning an empty vector when `objects_ids` is empty.
+/// 2. Starting a transaction and running `COPY_FOLDERS` (for recursive
+///    folder copies) or `COPY_FILES` (for flat file copies) depending on
+///    `is_folder`.
+/// 3. Returning `Vec<CopyJobRecord>` describing all logical copies to be
+///    mirrored in object storage by background workers.
 pub async fn copy_objects(
     con: &PgPool,
     objects_ids: &[Uuid],
@@ -316,7 +370,11 @@ pub async fn copy_objects(
         .inspect_err(|e| error!("failed to commit copy {} transaction: {}", is_folder, e))?;
     Ok(files_id)
 }
-/// accepts folder id and fetches all its direct children as a response.
+/// Fetches all direct (non‑recursive) children of a folder by:
+/// 1. Selecting active file ids from `files` and active folder ids from
+///    `folders` where `parent_id = f_id` and `owner_id` matches.
+/// 2. Tagging each as `'file'` or `'folder'` and returning them as
+///    `Vec<FolderChild>` for listing endpoints.
 pub async fn fetch_folder_children(
     con: &PgPool,
     f_id: Uuid,
@@ -334,7 +392,14 @@ pub async fn fetch_folder_children(
     .fetch_all(con)
     .await.inspect_err(|e|error!("failed to get all folder children: {e}"))?)
 }
-/// used in sharing purposes to validate if a given object id is within the shared scooped token .
+/// Validates that a target object is within a shared ancestor subtree and
+/// optionally returns its metadata by:
+/// 1. Choosing `VALIDATE_FOLDER_QUERY` or `VALIDATE_FILE_QUERY` based on
+///    `kind`.
+/// 2. Executing the query with `(f_id, owner_id, grand_p_id)` to ensure the
+///    object is a descendant of the shared root and owned by the same user.
+/// 3. Returning `Ok(Some(T))` when the object is validly in scope, or
+///    `Ok(None)` when outside the shared subtree.
 pub async fn validate_object_ancestor<T>(
     con: &PgPool,
     owner_id: Uuid,
@@ -361,7 +426,13 @@ where
         })?;
     Ok(r)
 }
-
+/// Changes the parent folder of a file or folder by:
+/// 1. Selecting the appropriate move query (`MOVE_FOLDER` or `MOVE_FILE`)
+///    based on `kind`.
+/// 2. Executing it with `source_id`, `owner_id`, and `dest_folder_id`,
+///    which performs validation (e.g., conflicts, cycles) at the SQL level.
+/// 3. Returning a `MoveDbResponse` that encodes whether the move
+///    succeeded, conflicted, or failed due to missing objects.
 pub async fn change_object_parent_id(
     con: &PgPool,
     owner_id: Uuid,
